@@ -3,10 +3,12 @@
 #include "relay_driver.h"
 #include "digital_input.h"
 #include "analog_input.h"
+#include "rs485_control.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_log_buffer.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -47,6 +49,22 @@ static uint16_t get_u16(const uint8_t *p)
     return ((uint16_t)p[0] << 8) | p[1];
 }
 
+static void log_received_frame(const uint8_t *data, size_t len)
+{
+    if (len >= 4) {
+        uint16_t received_crc = data[len - 2] |
+                                ((uint16_t)data[len - 1] << 8);
+        uint16_t calculated_crc = crc16(data, len - 2);
+        ESP_LOGI(TAG, "RS485 RX: len=%u addr=%u function=0x%02X CRC=%s",
+                 (unsigned)len, data[0], data[1],
+                 received_crc == calculated_crc ? "OK" : "ERROR");
+    } else {
+        ESP_LOGW(TAG, "RS485 RX: short frame, len=%u", (unsigned)len);
+    }
+
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, len, ESP_LOG_INFO);
+}
+
 static void send_frame(uint8_t *data, size_t len)
 {
     uint16_t crc = crc16(data, len);
@@ -68,8 +86,12 @@ static void exception(uint8_t addr, uint8_t fc, uint8_t code)
 
 static bool read_bit(bool coils, uint16_t address)
 {
-    if (address >= 4) return false;
-    return coils ? relay_driver_get(address) : digital_input_get(address);
+    if (coils) {
+        if (address >= BOARD_RELAY_COUNT) return false;
+        return relay_driver_get(address);
+    }
+    if (address >= BOARD_INPUT_COUNT) return false;
+    return digital_input_get(address);
 }
 
 static bool read_input_reg(uint16_t address, uint16_t *value)
@@ -90,7 +112,7 @@ static bool read_holding_reg(uint16_t address, uint16_t *value)
         *value = analog_input_get_mode(address - REG_MODE_BASE);
     else if (address == REG_RELAY_MASK) *value = relay_driver_get_mask();
     else if (address == REG_INPUT_MASK) *value = digital_input_get_mask();
-    else return false;
+    else return rs485_control_read_register(address, value);
     return true;
 }
 
@@ -100,7 +122,7 @@ static bool write_holding_reg(uint16_t address, uint16_t value)
         return analog_input_set_mode(address - REG_MODE_BASE, (analog_mode_t)value) == ESP_OK;
     if (address == REG_RELAY_MASK)
         return relay_driver_set_mask((uint8_t)value) == ESP_OK;
-    return false;
+    return rs485_control_write_register(address, value);
 }
 
 static void handle_request(uint8_t *rx, size_t len)
@@ -113,7 +135,8 @@ static void handle_request(uint8_t *rx, size_t len)
 
     if ((fc == 0x01 || fc == 0x02) && len == 8) {
         uint16_t start = get_u16(&rx[2]), count = get_u16(&rx[4]);
-        if (!count || count > 4 || start + count > 4) {
+        uint16_t limit = fc == 0x01 ? BOARD_RELAY_COUNT : BOARD_INPUT_COUNT;
+        if (!count || start >= limit || count > limit - start) {
             exception(addr, fc, 0x02); return;
         }
         tx[2] = (count + 7) / 8;
@@ -179,6 +202,9 @@ static void handle_request(uint8_t *rx, size_t len)
 static void modbus_task(void *arg)
 {
     uint8_t rx[RX_MAX];
+    TickType_t last_status_log = xTaskGetTickCount();
+    ESP_LOGI(TAG, "RS485 receiver ready, waiting for Modbus request");
+
     while (true) {
         int len = uart_read_bytes(BOARD_RS485_UART, rx, sizeof(rx),
                                   pdMS_TO_TICKS(20));
@@ -187,7 +213,21 @@ static void modbus_task(void *arg)
             int more = uart_read_bytes(BOARD_RS485_UART, rx + len,
                                        sizeof(rx) - len, 0);
             if (more > 0) len += more;
+            log_received_frame(rx, len);
             handle_request(rx, len);
+            last_status_log = xTaskGetTickCount();
+        } else {
+            TickType_t now = xTaskGetTickCount();
+            if (now - last_status_log >= pdMS_TO_TICKS(5000)) {
+                size_t buffered = 0;
+                uart_get_buffered_data_len(BOARD_RS485_UART, &buffered);
+                ESP_LOGI(TAG,
+                         "RS485 waiting: 485C=%d RXD2=%d buffered=%u",
+                         gpio_get_level(BOARD_RS485_DIR_GPIO),
+                         gpio_get_level(BOARD_RS485_RX_GPIO),
+                         (unsigned)buffered);
+                last_status_log = now;
+            }
         }
     }
 }
@@ -216,8 +256,17 @@ esp_err_t modbus_slave_init(void)
     };
     ESP_RETURN_ON_ERROR(gpio_config(&dir_cfg), TAG, "direction pin");
     gpio_set_level(BOARD_RS485_DIR_GPIO, BOARD_RS485_DIR_RX_LEVEL);
+    ESP_LOGI(TAG,
+             "UART%d initialized: TX=GPIO%d RX=GPIO%d, 9600 8N1",
+             BOARD_RS485_UART, BOARD_RS485_TX_GPIO, BOARD_RS485_RX_GPIO);
+    ESP_LOGI(TAG,
+             "485C direction control: GPIO%d, RX level=%d, TX level=%d",
+             BOARD_RS485_DIR_GPIO, BOARD_RS485_DIR_RX_LEVEL,
+             BOARD_RS485_DIR_TX_LEVEL);
+
     if (xTaskCreate(modbus_task, "modbus_rtu", 4096, NULL, 10, &s_task) != pdPASS)
         return ESP_ERR_NO_MEM;
+    ESP_LOGI(TAG, "Modbus receive task created successfully");
     return ESP_OK;
 }
 

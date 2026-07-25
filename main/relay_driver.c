@@ -1,11 +1,13 @@
 #include "relay_driver.h"
 #include "board_config.h"
 #include "driver/gpio.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+static const char *TAG = "RELAY";
 static const gpio_num_t s_gpio[BOARD_RELAY_COUNT] = {
-    BOARD_RELAY1_GPIO, BOARD_RELAY2_GPIO, BOARD_RELAY3_GPIO, BOARD_RELAY4_GPIO
+    BOARD_RELAY4_GPIO, BOARD_RELAY3_GPIO, BOARD_RELAY2_GPIO, BOARD_RELAY1_GPIO
 };
 static uint8_t s_mask;
 static SemaphoreHandle_t s_lock;
@@ -39,6 +41,10 @@ esp_err_t relay_driver_set(uint8_t channel, bool on)
     if (err == ESP_OK) {
         if (on) s_mask |= (1U << channel);
         else s_mask &= ~(1U << channel);
+        ESP_LOGI(TAG, "Relay %u -> %s (GPIO%d=%d)", channel + 1,
+                 on ? "ON" : "OFF", s_gpio[channel],
+                 on ? BOARD_RELAY_ACTIVE_LEVEL
+                    : BOARD_RELAY_INACTIVE_LEVEL);
     }
     xSemaphoreGive(s_lock);
     return err;

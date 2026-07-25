@@ -5,12 +5,15 @@
 #include "driver/i2c_master.h"
 
 #define BOARD_RELAY_COUNT              4
-#define BOARD_INPUT_COUNT              4
+#define BOARD_INPUT_COUNT              8
 #define BOARD_ANALOG_COUNT             4
 
-/* Relay optocoupler + ULN2003 chain is active-low at the ESP32 pins. */
-#define BOARD_RELAY_ACTIVE_LEVEL       0
-#define BOARD_RELAY_INACTIVE_LEVEL     1
+/*
+ * RELAY1..4 drive the PC817 LEDs through 1.5 k resistors.
+ * A high ESP32 output enables the optocoupler and the ULN2003 channel.
+ */
+#define BOARD_RELAY_ACTIVE_LEVEL       1
+#define BOARD_RELAY_INACTIVE_LEVEL     0
 #define BOARD_RELAY1_GPIO              GPIO_NUM_33
 #define BOARD_RELAY2_GPIO              GPIO_NUM_25
 #define BOARD_RELAY3_GPIO              GPIO_NUM_26
@@ -22,6 +25,11 @@
 #define BOARD_NQ2_GPIO                 GPIO_NUM_2
 #define BOARD_NQ3_GPIO                 GPIO_NUM_32
 #define BOARD_NQ4_GPIO                 GPIO_NUM_23
+/* Relay feedback inputs from U16..U19. */
+#define BOARD_NQ5_GPIO                 GPIO_NUM_34
+#define BOARD_NQ6_GPIO                 GPIO_NUM_35
+#define BOARD_NQ7_GPIO                 GPIO_NUM_36
+#define BOARD_NQ8_GPIO                 GPIO_NUM_39
 
 #define BOARD_I2C_PORT                 I2C_NUM_0
 #define BOARD_I2C_SDA_GPIO             GPIO_NUM_21
@@ -30,10 +38,15 @@
 #define BOARD_ADS1115_ADDR             0x48
 
 #define BOARD_RS485_UART               UART_NUM_2
+/* Schematic nets: TXD2=IO13, RXD2=IO14, 485C=IO19. */
 #define BOARD_RS485_TX_GPIO            GPIO_NUM_13
 #define BOARD_RS485_RX_GPIO            GPIO_NUM_14
 #define BOARD_RS485_DIR_GPIO           GPIO_NUM_19
 #define BOARD_RS485_BAUD               9600
-#define BOARD_RS485_DIR_RX_LEVEL       0
-#define BOARD_RS485_DIR_TX_LEVEL       1
+/*
+ * 485C drives the optocoupler LED cathode, so it is active-low:
+ * low enables ADM483 transmission; high enables reception.
+ */
+#define BOARD_RS485_DIR_RX_LEVEL       1
+#define BOARD_RS485_DIR_TX_LEVEL       0
 #define BOARD_MODBUS_SLAVE_ADDR        1

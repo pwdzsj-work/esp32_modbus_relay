@@ -6,6 +6,7 @@ idf_component_register(
         "digital_input.c"
         "modbus_slave.c"
         "relay_driver.c"
+        "rs485_control.c"
     INCLUDE_DIRS "."
     REQUIRES driver
 )
