@@ -9,10 +9,12 @@
 #include "rs485_control.h"
 
 static const char *TAG = "APP";
+#define APP_BUILD_TAG "rs485-only-restore-20260727"
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "Application starting");
+    ESP_LOGI(TAG, "Firmware build: %s", APP_BUILD_TAG);
 
     ESP_ERROR_CHECK(relay_driver_init());
     ESP_LOGI(TAG, "Relay driver initialized");

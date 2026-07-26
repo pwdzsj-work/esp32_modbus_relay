@@ -21,11 +21,11 @@ Espressif IDF 插件打开。默认目标 `esp32`，建议 ESP-IDF 5.4/5.5。
 - 支持功能码：01、02、03、04、05、06、0F、10、11
 - 修改参数请编辑 `main/board_config.h`
 
-### Qt/LoRa 扫描上线
+### Qt/Modbus 设备扫描
 
-LoRa 模块使用透明传输模式时，Qt 主站依次向从站地址 `1..247` 发送 Modbus
-功能码 `0x11`（Report Server ID）即可扫描设备。逐地址轮询不会造成多个
-LoRa 节点同时回复而发生空中冲突。
+Modbus 功能码 `0x11`（Report Server ID）可用于 RS485 设备扫描。LoRa
+串口当前仅负责透明数据接收和日志打印，不再与 RS485 Modbus 处理器共用，
+以保持原有 RS485 控制路径不变。
 
 扫描默认地址 `1` 的请求：
 
@@ -45,6 +45,78 @@ LoRa 节点同时回复而发生空中冲突。
 
 修改 `BOARD_MODBUS_SLAVE_ADDR` 后，`BOARD_MODBUS_SERVER_ID` 会自动采用相同
 地址。每个 LoRa 节点必须配置不同的从站地址。
+
+### LoRa 串口透传驱动
+
+独立驱动文件为 `main/lora_uart.c` 和 `main/lora_uart.h`。默认使用 UART1：
+
+| 信号 | ESP32 引脚 |
+|---|---:|
+| LoRa RX（连接 ESP32 TX） | GPIO17 |
+| LoRa TX（连接 ESP32 RX） | GPIO16 |
+| GND | GND |
+
+默认串口参数为 `9600 8N1`。初始化和收发示例：
+
+```c
+#include "lora_uart.h"
+
+lora_uart_config_t config = lora_uart_get_default_config();
+ESP_ERROR_CHECK(lora_uart_init(&config));
+
+const uint8_t request[] = {0x01, 0x11, 0xC0, 0x2C};
+ESP_ERROR_CHECK(lora_uart_send(request, sizeof(request),
+                               pdMS_TO_TICKS(1000)));
+
+uint8_t response[64];
+int length = lora_uart_receive(response, sizeof(response),
+                               pdMS_TO_TICKS(1000));
+if (length > 0) {
+    /* response[0..length-1] 是 LoRa 模块透传收到的数据 */
+}
+```
+
+需要其他引脚或波特率时，在调用 `lora_uart_init()` 前修改 `config`。LoRa
+模块与 ESP32 必须共地，TX/RX 需要交叉连接。
+
+LoRa UART 和接收任务源码目前保留，但默认未在 `app_main.c` 中初始化。
+程序以纯 RS485 模式运行，用于保持原有 Modbus 控制路径不受影响。需要恢复
+LoRa 接收测试时，可在初始化完成后调用 `lora_receiver_init()`。收到数据后
+会以十六进制打印完整内容，例如：
+
+```text
+I (...) LORA_RX: Received 4 bytes
+I (...) LORA_RX: 01 11 c0 2c
+```
+
+接收任务以 5 ms 串口空闲作为一帧结束条件，单次最多打印 256 字节。接收
+处理位于 `main/lora_receiver.c`，当前只打印收到的数据，不执行 Modbus
+控制，也不会通过 LoRa 自动回复。RS485 Modbus 继续使用原来的 UART2 独立
+处理路径。底层 LoRa UART 驱动保存在 `main/lora_uart.c`。
+
+`main/lora_periodic_sender.c` 中保留了每 2 秒发送一次的测试任务，但默认
+未在 `app_main.c` 中启动，因此上电后不会自动发送。测试内容为：
+
+```text
+LORA_TEST\r\n
+```
+
+对应十六进制数据：
+
+```text
+4C 4F 52 41 5F 54 45 53 54 0D 0A
+```
+
+手动调用 `lora_periodic_sender_start()` 后，发送成功时输出：
+
+```text
+I (...) LORA_TX: Sent 11 test bytes
+I (...) LORA_TX: 4c 4f 52 41 5f 54 45 53 54 0d 0a
+```
+
+发送周期通过 `LORA_TEST_SEND_PERIOD_MS` 修改，测试内容通过
+`s_test_command` 修改。该自动发送仅用于通信测试，正式部署多节点 LoRa
+网络时应停用，以免多个节点周期发送造成碰撞。
 
 ### 线圈（0xxxx，功能码 01/05/0F）
 
