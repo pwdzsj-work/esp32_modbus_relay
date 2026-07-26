@@ -51,3 +51,11 @@
 #define BOARD_RS485_DIR_RX_LEVEL       1
 #define BOARD_RS485_DIR_TX_LEVEL       0
 #define BOARD_MODBUS_SLAVE_ADDR        1
+
+/*
+ * Returned by Modbus function 0x11 (Report Server ID).  A Qt host can poll
+ * slave addresses 1..247 with this function to discover boards through a
+ * transparent LoRa link.
+ */
+#define BOARD_MODBUS_SERVER_ID         BOARD_MODBUS_SLAVE_ADDR
+#define BOARD_DEVICE_MODEL             "ESP32-RELAY-4"

@@ -138,7 +138,22 @@ static void handle_request(uint8_t *rx, size_t len)
     const uint8_t addr = rx[0], fc = rx[1];
     uint8_t tx[TX_MAX] = {addr, fc};
 
-    if ((fc == 0x01 || fc == 0x02) && len == 8) {
+    if (fc == 0x11 && len == 4) {
+        /*
+         * Report Server ID response:
+         *   address, 0x11, byte count, server ID, run indicator, model...
+         * The 0xFF run indicator means that the application is online.
+         */
+        static const char model[] = BOARD_DEVICE_MODEL;
+        const size_t model_len = sizeof(model) - 1;
+        tx[2] = (uint8_t)(2 + model_len);
+        tx[3] = BOARD_MODBUS_SERVER_ID;
+        tx[4] = 0xFF;
+        memcpy(&tx[5], model, model_len);
+        send_frame(tx, 5 + model_len);
+        ESP_LOGI(TAG, "Discovery reply sent: slave=%u model=%s",
+                 addr, model);
+    } else if ((fc == 0x01 || fc == 0x02) && len == 8) {
         uint16_t start = get_u16(&rx[2]), count = get_u16(&rx[4]);
         uint16_t limit = fc == 0x01 ? BOARD_RELAY_COUNT : BOARD_INPUT_COUNT;
         if (!count || start >= limit || count > limit - start) {
@@ -284,6 +299,8 @@ esp_err_t modbus_slave_init(void)
     if (xTaskCreate(modbus_task, "modbus_rtu", 4096, NULL, 10, &s_task) != pdPASS)
         return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "Modbus receive task created successfully");
+    ESP_LOGI(TAG,
+             "LoRa discovery enabled: poll slave addresses with function 0x11");
     return ESP_OK;
 }
 
