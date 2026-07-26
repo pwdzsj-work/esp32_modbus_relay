@@ -3,6 +3,7 @@
 #include "relay_driver.h"
 #include "digital_input.h"
 #include "analog_input.h"
+#include "rv3028.h"
 #include "rs485_control.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -112,6 +113,7 @@ static bool read_holding_reg(uint16_t address, uint16_t *value)
         *value = analog_input_get_mode(address - REG_MODE_BASE);
     else if (address == REG_RELAY_MASK) *value = relay_driver_get_mask();
     else if (address == REG_INPUT_MASK) *value = digital_input_get_mask();
+    else if (rv3028_modbus_read_register(address, value)) return true;
     else return rs485_control_read_register(address, value);
     return true;
 }
@@ -122,6 +124,9 @@ static bool write_holding_reg(uint16_t address, uint16_t value)
         return analog_input_set_mode(address - REG_MODE_BASE, (analog_mode_t)value) == ESP_OK;
     if (address == REG_RELAY_MASK)
         return relay_driver_set_mask((uint8_t)value) == ESP_OK;
+    if (address >= RV3028_MODBUS_REG_YEAR &&
+        address < RV3028_MODBUS_REG_YEAR + RV3028_MODBUS_REG_COUNT)
+        return rv3028_modbus_write_register(address, value);
     return rs485_control_write_register(address, value);
 }
 
@@ -187,9 +192,21 @@ static void handle_request(uint8_t *rx, size_t len)
             len != (size_t)(9 + rx[6])) {
             exception(addr, fc, 0x03); return;
         }
-        for (uint16_t i = 0; i < count; ++i) {
-            if (!write_holding_reg(start + i, get_u16(&rx[7 + 2 * i]))) {
+        if (start >= RV3028_MODBUS_REG_YEAR &&
+            start + count <=
+                RV3028_MODBUS_REG_YEAR + RV3028_MODBUS_REG_COUNT) {
+            uint16_t values[RV3028_MODBUS_REG_COUNT];
+            for (uint16_t i = 0; i < count; ++i)
+                values[i] = get_u16(&rx[7 + 2 * i]);
+            if (!rv3028_modbus_write_registers(start, values, count)) {
                 exception(addr, fc, 0x03); return;
+            }
+        } else {
+            for (uint16_t i = 0; i < count; ++i) {
+                if (!write_holding_reg(start + i,
+                                       get_u16(&rx[7 + 2 * i]))) {
+                    exception(addr, fc, 0x03); return;
+                }
             }
         }
         memcpy(&tx[2], &rx[2], 4);

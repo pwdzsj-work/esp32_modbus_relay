@@ -36,6 +36,7 @@
 #define BOARD_I2C_SCL_GPIO             GPIO_NUM_22
 #define BOARD_I2C_FREQ_HZ              100000
 #define BOARD_ADS1115_ADDR             0x48
+#define BOARD_RV3028_ADDR              0x52
 
 #define BOARD_RS485_UART               UART_NUM_2
 /* Schematic nets: TXD2=IO13, RXD2=IO14, 485C=IO19. */

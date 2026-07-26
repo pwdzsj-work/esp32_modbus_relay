@@ -4,6 +4,7 @@
 #include "relay_driver.h"
 #include "digital_input.h"
 #include "analog_input.h"
+#include "rv3028.h"
 #include "modbus_slave.h"
 #include "rs485_control.h"
 
@@ -22,6 +23,9 @@ void app_main(void)
     ESP_ERROR_CHECK(analog_input_init());
     ESP_LOGI(TAG, "ADS1115 analog inputs initialized");
 
+    ESP_ERROR_CHECK(rv3028_init());
+    ESP_LOGI(TAG, "RV-3028 real-time clock initialized");
+
     ESP_ERROR_CHECK(rs485_control_init());
     ESP_LOGI(TAG, "RS485 command control initialized");
 
@@ -33,6 +37,7 @@ void app_main(void)
     while (true) {
         analog_input_sample_all();
         digital_input_poll_and_log();
+        rv3028_poll_and_log();
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }

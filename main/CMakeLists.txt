@@ -1,11 +1,13 @@
 idf_component_register(
     SRCS
         "app_main.c"
+        "board_i2c.c"
         "ads1115.c"
         "analog_input.c"
         "digital_input.c"
         "modbus_slave.c"
         "relay_driver.c"
+        "rv3028.c"
         "rs485_control.c"
     INCLUDE_DIRS "."
     REQUIRES driver
