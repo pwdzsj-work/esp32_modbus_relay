@@ -7,9 +7,10 @@
 #include "rv3028.h"
 #include "modbus_slave.h"
 #include "rs485_control.h"
+#include "lora_receiver.h"
 
 static const char *TAG = "APP";
-#define APP_BUILD_TAG "rs485-only-restore-20260727"
+#define APP_BUILD_TAG "rs485-lora-modbus-20260727"
 
 void app_main(void)
 {
@@ -32,8 +33,10 @@ void app_main(void)
     ESP_LOGI(TAG, "RS485 command control initialized");
 
     ESP_ERROR_CHECK(modbus_slave_init());
+    ESP_ERROR_CHECK(lora_receiver_init());
 
-    ESP_LOGI(TAG, "Initialization complete: Modbus RTU slave=%u, 9600 8N1",
+    ESP_LOGI(TAG,
+             "Initialization complete: RS485/LoRa Modbus RTU slave=%u, 9600 8N1",
              modbus_slave_get_address());
 
     while (true) {

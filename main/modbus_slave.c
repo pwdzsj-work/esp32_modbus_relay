@@ -5,6 +5,7 @@
 #include "analog_input.h"
 #include "rv3028.h"
 #include "rs485_control.h"
+#include "lora_uart.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_check.h"
@@ -28,6 +29,11 @@
 static const char *TAG = "MODBUS";
 static TaskHandle_t s_task;
 
+typedef enum {
+    MODBUS_TRANSPORT_RS485,
+    MODBUS_TRANSPORT_LORA,
+} modbus_transport_t;
+
 static uint16_t crc16(const uint8_t *data, size_t len)
 {
     uint16_t crc = 0xFFFF;
@@ -50,27 +56,47 @@ static uint16_t get_u16(const uint8_t *p)
     return ((uint16_t)p[0] << 8) | p[1];
 }
 
-static void log_received_frame(const uint8_t *data, size_t len)
+static const char *transport_name(modbus_transport_t transport)
+{
+    return transport == MODBUS_TRANSPORT_LORA ? "LoRa" : "RS485";
+}
+
+static void log_received_frame(const uint8_t *data, size_t len,
+                               modbus_transport_t transport)
 {
     if (len >= 4) {
         uint16_t received_crc = data[len - 2] |
                                 ((uint16_t)data[len - 1] << 8);
         uint16_t calculated_crc = crc16(data, len - 2);
-        ESP_LOGI(TAG, "RS485 RX: len=%u addr=%u function=0x%02X CRC=%s",
-                 (unsigned)len, data[0], data[1],
+        ESP_LOGI(TAG, "%s RX: len=%u addr=%u function=0x%02X CRC=%s",
+                 transport_name(transport), (unsigned)len, data[0], data[1],
                  received_crc == calculated_crc ? "OK" : "ERROR");
     } else {
-        ESP_LOGW(TAG, "RS485 RX: short frame, len=%u", (unsigned)len);
+        ESP_LOGW(TAG, "%s RX: short frame, len=%u",
+                 transport_name(transport), (unsigned)len);
     }
 
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, len, ESP_LOG_INFO);
 }
 
-static void send_frame(uint8_t *data, size_t len)
+static void send_frame(uint8_t *data, size_t len,
+                       modbus_transport_t transport)
 {
     uint16_t crc = crc16(data, len);
     data[len++] = (uint8_t)crc;
     data[len++] = (uint8_t)(crc >> 8);
+
+    if (transport == MODBUS_TRANSPORT_LORA) {
+        esp_err_t err = lora_uart_send(data, len, pdMS_TO_TICKS(100));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "LoRa response failed: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "LoRa TX: len=%u", (unsigned)len);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, len, ESP_LOG_INFO);
+        }
+        return;
+    }
+
     gpio_set_level(BOARD_RS485_DIR_GPIO, BOARD_RS485_DIR_TX_LEVEL);
     esp_rom_delay_us(50);
     uart_write_bytes(BOARD_RS485_UART, data, len);
@@ -79,10 +105,11 @@ static void send_frame(uint8_t *data, size_t len)
     gpio_set_level(BOARD_RS485_DIR_GPIO, BOARD_RS485_DIR_RX_LEVEL);
 }
 
-static void exception(uint8_t addr, uint8_t fc, uint8_t code)
+static void exception(uint8_t addr, uint8_t fc, uint8_t code,
+                      modbus_transport_t transport)
 {
     uint8_t tx[5] = {addr, (uint8_t)(fc | 0x80), code};
-    send_frame(tx, 3);
+    send_frame(tx, 3, transport);
 }
 
 static bool read_bit(bool coils, uint16_t address)
@@ -130,7 +157,8 @@ static bool write_holding_reg(uint16_t address, uint16_t value)
     return rs485_control_write_register(address, value);
 }
 
-static void handle_request(uint8_t *rx, size_t len)
+static void handle_request(uint8_t *rx, size_t len,
+                           modbus_transport_t transport)
 {
     if (len < 4 || rx[0] != BOARD_MODBUS_SLAVE_ADDR) return;
     uint16_t got_crc = rx[len - 2] | ((uint16_t)rx[len - 1] << 8);
@@ -150,62 +178,63 @@ static void handle_request(uint8_t *rx, size_t len)
         tx[3] = BOARD_MODBUS_SERVER_ID;
         tx[4] = 0xFF;
         memcpy(&tx[5], model, model_len);
-        send_frame(tx, 5 + model_len);
-        ESP_LOGI(TAG, "Discovery reply sent: slave=%u model=%s",
-                 addr, model);
+        send_frame(tx, 5 + model_len, transport);
+        ESP_LOGI(TAG, "Discovery reply sent via %s: slave=%u model=%s",
+                 transport_name(transport), addr, model);
     } else if ((fc == 0x01 || fc == 0x02) && len == 8) {
         uint16_t start = get_u16(&rx[2]), count = get_u16(&rx[4]);
         uint16_t limit = fc == 0x01 ? BOARD_RELAY_COUNT : BOARD_INPUT_COUNT;
         if (!count || start >= limit || count > limit - start) {
-            exception(addr, fc, 0x02); return;
+            exception(addr, fc, 0x02, transport); return;
         }
         tx[2] = (count + 7) / 8;
         tx[3] = 0;
         for (uint16_t i = 0; i < count; ++i)
             if (read_bit(fc == 0x01, start + i)) tx[3] |= 1U << i;
-        send_frame(tx, 3 + tx[2]);
+        send_frame(tx, 3 + tx[2], transport);
     } else if ((fc == 0x03 || fc == 0x04) && len == 8) {
         uint16_t start = get_u16(&rx[2]), count = get_u16(&rx[4]);
         if (!count || count > 32 || 3U + 2U * count > TX_MAX - 2) {
-            exception(addr, fc, 0x03); return;
+            exception(addr, fc, 0x03, transport); return;
         }
         tx[2] = count * 2;
         for (uint16_t i = 0; i < count; ++i) {
             uint16_t value;
             bool ok = fc == 0x03 ? read_holding_reg(start + i, &value)
                                  : read_input_reg(start + i, &value);
-            if (!ok) { exception(addr, fc, 0x02); return; }
+            if (!ok) { exception(addr, fc, 0x02, transport); return; }
             put_u16(&tx[3 + 2 * i], value);
         }
-        send_frame(tx, 3 + 2 * count);
+        send_frame(tx, 3 + 2 * count, transport);
     } else if (fc == 0x05 && len == 8) {
         uint16_t coil = get_u16(&rx[2]), value = get_u16(&rx[4]);
         if (coil >= 4 || (value != 0x0000 && value != 0xFF00)) {
-            exception(addr, fc, value == 0 && coil >= 4 ? 0x02 : 0x03); return;
+            exception(addr, fc, value == 0 && coil >= 4 ? 0x02 : 0x03,
+                      transport); return;
         }
         relay_driver_set(coil, value == 0xFF00);
-        send_frame(rx, 6);
+        send_frame(rx, 6, transport);
     } else if (fc == 0x06 && len == 8) {
         uint16_t reg = get_u16(&rx[2]), value = get_u16(&rx[4]);
         if (!write_holding_reg(reg, value)) {
-            exception(addr, fc, 0x03); return;
+            exception(addr, fc, 0x03, transport); return;
         }
-        send_frame(rx, 6);
+        send_frame(rx, 6, transport);
     } else if (fc == 0x0F && len >= 9) {
         uint16_t start = get_u16(&rx[2]), count = get_u16(&rx[4]);
         if (!count || start + count > 4 || rx[6] != (count + 7) / 8 ||
             len != (size_t)(9 + rx[6])) {
-            exception(addr, fc, 0x03); return;
+            exception(addr, fc, 0x03, transport); return;
         }
         for (uint16_t i = 0; i < count; ++i)
             relay_driver_set(start + i, (rx[7 + i / 8] >> (i % 8)) & 1);
         memcpy(&tx[2], &rx[2], 4);
-        send_frame(tx, 6);
+        send_frame(tx, 6, transport);
     } else if (fc == 0x10 && len >= 9) {
         uint16_t start = get_u16(&rx[2]), count = get_u16(&rx[4]);
         if (!count || count > 16 || rx[6] != 2 * count ||
             len != (size_t)(9 + rx[6])) {
-            exception(addr, fc, 0x03); return;
+            exception(addr, fc, 0x03, transport); return;
         }
         if (start >= RV3028_MODBUS_REG_YEAR &&
             start + count <=
@@ -214,21 +243,30 @@ static void handle_request(uint8_t *rx, size_t len)
             for (uint16_t i = 0; i < count; ++i)
                 values[i] = get_u16(&rx[7 + 2 * i]);
             if (!rv3028_modbus_write_registers(start, values, count)) {
-                exception(addr, fc, 0x03); return;
+                exception(addr, fc, 0x03, transport); return;
             }
         } else {
             for (uint16_t i = 0; i < count; ++i) {
                 if (!write_holding_reg(start + i,
                                        get_u16(&rx[7 + 2 * i]))) {
-                    exception(addr, fc, 0x03); return;
+                    exception(addr, fc, 0x03, transport); return;
                 }
             }
         }
         memcpy(&tx[2], &rx[2], 4);
-        send_frame(tx, 6);
+        send_frame(tx, 6, transport);
     } else {
-        exception(addr, fc, 0x01);
+        exception(addr, fc, 0x01, transport);
     }
+}
+
+void modbus_slave_process_lora_frame(uint8_t *frame, size_t length)
+{
+    if (!frame || length == 0) {
+        return;
+    }
+    log_received_frame(frame, length, MODBUS_TRANSPORT_LORA);
+    handle_request(frame, length, MODBUS_TRANSPORT_LORA);
 }
 
 static void modbus_task(void *arg)
@@ -245,8 +283,8 @@ static void modbus_task(void *arg)
             int more = uart_read_bytes(BOARD_RS485_UART, rx + len,
                                        sizeof(rx) - len, 0);
             if (more > 0) len += more;
-            log_received_frame(rx, len);
-            handle_request(rx, len);
+            log_received_frame(rx, len, MODBUS_TRANSPORT_RS485);
+            handle_request(rx, len, MODBUS_TRANSPORT_RS485);
             last_status_log = xTaskGetTickCount();
         } else {
             TickType_t now = xTaskGetTickCount();

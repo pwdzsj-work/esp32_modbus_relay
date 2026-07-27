@@ -1,6 +1,7 @@
 #include "lora_receiver.h"
 
 #include "lora_uart.h"
+#include "modbus_slave.h"
 
 #include "esp_log.h"
 #include "esp_log_buffer.h"
@@ -45,6 +46,7 @@ static void receive_task(void *argument)
         ESP_LOGI(TAG, "Received %d byte%s",
                  length, length == 1 ? "" : "s");
         ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, length, ESP_LOG_INFO);
+        modbus_slave_process_lora_frame(data, (size_t)length);
 
         if (length == sizeof(data)) {
             ESP_LOGW(TAG,

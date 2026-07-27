@@ -21,11 +21,11 @@ Espressif IDF 插件打开。默认目标 `esp32`，建议 ESP-IDF 5.4/5.5。
 - 支持功能码：01、02、03、04、05、06、0F、10、11
 - 修改参数请编辑 `main/board_config.h`
 
-### Qt/Modbus 设备扫描
+### Qt/RS485/LoRa 设备扫描
 
-Modbus 功能码 `0x11`（Report Server ID）可用于 RS485 设备扫描。LoRa
-串口当前仅负责透明数据接收和日志打印，不再与 RS485 Modbus 处理器共用，
-以保持原有 RS485 控制路径不变。
+Modbus 功能码 `0x11`（Report Server ID）可用于 RS485 或透明 LoRa
+链路上的设备扫描。固件会判断请求来自 RS485 还是 LoRa，并从同一链路返回
+响应。
 
 扫描默认地址 `1` 的请求：
 
@@ -79,20 +79,19 @@ if (length > 0) {
 需要其他引脚或波特率时，在调用 `lora_uart_init()` 前修改 `config`。LoRa
 模块与 ESP32 必须共地，TX/RX 需要交叉连接。
 
-LoRa UART 和接收任务源码目前保留，但默认未在 `app_main.c` 中初始化。
-程序以纯 RS485 模式运行，用于保持原有 Modbus 控制路径不受影响。需要恢复
-LoRa 接收测试时，可在初始化完成后调用 `lora_receiver_init()`。收到数据后
-会以十六进制打印完整内容，例如：
+LoRa UART 和接收任务默认在 `app_main.c` 中初始化。收到数据后会以
+十六进制打印完整内容，并将完整报文交给 Modbus 从站处理，例如：
 
 ```text
 I (...) LORA_RX: Received 4 bytes
 I (...) LORA_RX: 01 11 c0 2c
 ```
 
-接收任务以 5 ms 串口空闲作为一帧结束条件，单次最多打印 256 字节。接收
-处理位于 `main/lora_receiver.c`，当前只打印收到的数据，不执行 Modbus
-控制，也不会通过 LoRa 自动回复。RS485 Modbus 继续使用原来的 UART2 独立
-处理路径。底层 LoRa UART 驱动保存在 `main/lora_uart.c`。
+接收任务以 5 ms 串口空闲作为一帧结束条件，单次最多处理 256 字节。接收
+处理位于 `main/lora_receiver.c`。CRC、从站地址和功能码正确时，固件执行
+Modbus 请求并通过 LoRa UART1 原路回复。RS485 Modbus 继续使用 UART2，
+两个链路互不占用对方的串口。底层 LoRa UART 驱动保存在
+`main/lora_uart.c`。
 
 `main/lora_periodic_sender.c` 中保留了每 2 秒发送一次的测试任务，但默认
 未在 `app_main.c` 中启动，因此上电后不会自动发送。测试内容为：
