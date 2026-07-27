@@ -2,6 +2,7 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_log_buffer.h"
 #include "freertos/semphr.h"
 
 #include <limits.h>
@@ -121,10 +122,21 @@ esp_err_t lora_uart_send(const void *data, size_t length,
         return ESP_ERR_TIMEOUT;
     }
 
+    ESP_LOGI(TAG, "LoRa TX command (%u bytes):", (unsigned)length);
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, length, ESP_LOG_INFO);
+
     const int written = uart_write_bytes(s_port, data, length);
     esp_err_t err = written == (int)length
                         ? uart_wait_tx_done(s_port, timeout)
                         : ESP_FAIL;
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "LoRa TX complete (%d/%u bytes)",
+                 written, (unsigned)length);
+    } else {
+        ESP_LOGE(TAG, "LoRa TX failed: written=%d/%u, error=%s",
+                 written, (unsigned)length, esp_err_to_name(err));
+    }
 
     xSemaphoreGive(s_tx_mutex);
     return err;

@@ -25,11 +25,19 @@
 #define BOARD_NQ2_GPIO                 GPIO_NUM_2
 #define BOARD_NQ3_GPIO                 GPIO_NUM_32
 #define BOARD_NQ4_GPIO                 GPIO_NUM_23
+#define BOARD_NQ_SIGNAL_GPIO_MASK      ((1ULL << BOARD_NQ1_GPIO) | \
+                                        (1ULL << BOARD_NQ2_GPIO) | \
+                                        (1ULL << BOARD_NQ3_GPIO) | \
+                                        (1ULL << BOARD_NQ4_GPIO))
 /* Relay feedback inputs from U16..U19. */
 #define BOARD_NQ5_GPIO                 GPIO_NUM_34
 #define BOARD_NQ6_GPIO                 GPIO_NUM_35
 #define BOARD_NQ7_GPIO                 GPIO_NUM_36
 #define BOARD_NQ8_GPIO                 GPIO_NUM_39
+#define BOARD_NQ_FEEDBACK_GPIO_MASK    ((1ULL << BOARD_NQ5_GPIO) | \
+                                        (1ULL << BOARD_NQ6_GPIO) | \
+                                        (1ULL << BOARD_NQ7_GPIO) | \
+                                        (1ULL << BOARD_NQ8_GPIO))
 
 #define BOARD_I2C_PORT                 I2C_NUM_0
 #define BOARD_I2C_SDA_GPIO             GPIO_NUM_21
