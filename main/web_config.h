@@ -6,7 +6,7 @@
 esp_err_t web_config_start_if_requested(void);
 
 /*
- * Call periodically. Holding SW3 low for three seconds starts the Wi-Fi
- * access point and web server without resetting the ESP32.
+ * Call periodically. Each three-second SW3 press toggles the Wi-Fi access
+ * point and web server. SW3 must be released between toggle operations.
  */
 void web_config_poll(void);

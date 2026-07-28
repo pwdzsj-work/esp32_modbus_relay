@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -42,12 +43,15 @@ static bool s_sta_has_credentials;
 static bool s_sta_connected;
 static bool s_switch_initialized;
 static bool s_switch_low;
+static bool s_switch_action_done;
 static bool s_web_started;
 static TickType_t s_switch_low_since;
 static TickType_t s_last_schedule_check;
 static relay_schedule_t s_schedules[BOARD_RELAY_COUNT];
 static SemaphoreHandle_t s_schedule_lock;
 static esp_ip4_addr_t s_sta_ip;
+static esp_netif_t *s_ap_netif;
+static esp_netif_t *s_sta_netif;
 static httpd_handle_t s_server;
 
 static void copy_wifi_field(uint8_t *destination, size_t destination_size,
@@ -591,11 +595,12 @@ static esp_err_t start_web_mode(void)
     ESP_LOGI(TAG, "SW3 held low for %d ms: starting web mode",
              WEB_SWITCH_HOLD_MS);
     esp_err_t err = esp_netif_init();
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     err = esp_event_loop_create_default();
     if (err != ESP_OK) return err;
-    if (!esp_netif_create_default_wifi_ap() ||
-        !esp_netif_create_default_wifi_sta()) {
+    s_ap_netif = esp_netif_create_default_wifi_ap();
+    s_sta_netif = esp_netif_create_default_wifi_sta();
+    if (!s_ap_netif || !s_sta_netif) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -646,6 +651,60 @@ static esp_err_t start_web_mode(void)
     return ESP_OK;
 }
 
+static esp_err_t stop_web_mode(void)
+{
+    ESP_LOGI(TAG, "SW3 held low for %d ms: stopping web mode",
+             WEB_SWITCH_HOLD_MS);
+    esp_err_t result = ESP_OK;
+
+    if (s_server) {
+        esp_err_t err = httpd_stop(s_server);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "HTTP server stop failed: %s",
+                     esp_err_to_name(err));
+            result = err;
+        }
+        s_server = NULL;
+    }
+
+    esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                 wifi_event_handler);
+    esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                 wifi_event_handler);
+
+    esp_err_t err = esp_wifi_stop();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+        ESP_LOGW(TAG, "Wi-Fi stop failed: %s", esp_err_to_name(err));
+        if (result == ESP_OK) result = err;
+    }
+    err = esp_wifi_deinit();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+        ESP_LOGW(TAG, "Wi-Fi deinit failed: %s", esp_err_to_name(err));
+        if (result == ESP_OK) result = err;
+    }
+
+    if (s_sta_netif) {
+        esp_netif_destroy_default_wifi(s_sta_netif);
+        s_sta_netif = NULL;
+    }
+    if (s_ap_netif) {
+        esp_netif_destroy_default_wifi(s_ap_netif);
+        s_ap_netif = NULL;
+    }
+    err = esp_event_loop_delete_default();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Default event loop delete failed: %s",
+                 esp_err_to_name(err));
+        if (result == ESP_OK) result = err;
+    }
+
+    s_sta_has_credentials = false;
+    s_sta_connected = false;
+    s_sta_ip.addr = 0;
+    ESP_LOGI(TAG, "Wi-Fi hotspot and web server stopped");
+    return result;
+}
+
 esp_err_t web_config_start_if_requested(void)
 {
     gpio_config_t sw3_cfg = {
@@ -665,6 +724,7 @@ esp_err_t web_config_start_if_requested(void)
 
     s_switch_initialized = true;
     s_switch_low = false;
+    s_switch_action_done = false;
     s_web_started = false;
     ESP_LOGI(TAG,
              "SW3 runtime detection ready: GPIO%d, hold low for %d ms",
@@ -681,35 +741,38 @@ void web_config_poll(void)
         s_last_schedule_check = now;
         apply_relay_schedules();
     }
-    if (s_web_started) return;
-
     bool low = gpio_get_level(BOARD_WEB_CONFIG_GPIO) ==
                BOARD_WEB_CONFIG_ACTIVE_LEVEL;
     if (!low) {
         if (s_switch_low) {
-            ESP_LOGI(TAG, "SW3 released before web mode started");
+            ESP_LOGI(TAG, "SW3 released; next long press is armed");
         }
         s_switch_low = false;
+        s_switch_action_done = false;
         return;
     }
 
     if (!s_switch_low) {
         s_switch_low = true;
+        s_switch_action_done = false;
         s_switch_low_since = now;
-        ESP_LOGI(TAG, "SW3 low detected; keep holding for %d seconds",
-                 WEB_SWITCH_HOLD_MS / 1000);
+        ESP_LOGI(TAG, "SW3 low detected; hold %d seconds to %s hotspot",
+                 WEB_SWITCH_HOLD_MS / 1000,
+                 s_web_started ? "stop" : "start");
         return;
     }
 
+    if (s_switch_action_done) return;
     if (now - s_switch_low_since < pdMS_TO_TICKS(WEB_SWITCH_HOLD_MS)) {
         return;
     }
 
-    esp_err_t err = start_web_mode();
+    esp_err_t err = s_web_started ? stop_web_mode() : start_web_mode();
     if (err == ESP_OK) {
-        s_web_started = true;
+        s_web_started = !s_web_started;
     } else {
-        ESP_LOGE(TAG, "Unable to start web mode: %s", esp_err_to_name(err));
-        s_switch_low = false;
+        ESP_LOGE(TAG, "Unable to toggle web mode: %s",
+                 esp_err_to_name(err));
     }
+    s_switch_action_done = true;
 }
