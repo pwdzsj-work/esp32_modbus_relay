@@ -8,6 +8,7 @@
 #include "modbus_slave.h"
 #include "rs485_control.h"
 #include "lora_receiver.h"
+#include "web_config.h"
 
 static const char *TAG = "APP";
 #define APP_BUILD_TAG "rs485-lora-modbus-20260727"
@@ -34,6 +35,7 @@ void app_main(void)
 
     ESP_ERROR_CHECK(modbus_slave_init());
     ESP_ERROR_CHECK(lora_receiver_init());
+    ESP_ERROR_CHECK(web_config_start_if_requested());
 
     ESP_LOGI(TAG,
              "Initialization complete: RS485/LoRa Modbus RTU slave=%u, 9600 8N1",
@@ -43,6 +45,7 @@ void app_main(void)
         analog_input_sample_all();
         digital_input_poll_and_log();
         rv3028_poll_and_log();
+        web_config_poll();
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }

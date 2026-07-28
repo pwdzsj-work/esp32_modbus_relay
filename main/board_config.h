@@ -46,6 +46,15 @@
 #define BOARD_ADS1115_ADDR             0x48
 #define BOARD_RV3028_ADDR              0x52
 
+/*
+ * Ground SW3 while powering up/resetting to enable Wi-Fi configuration and
+ * the local web control page.
+ */
+#define BOARD_WEB_CONFIG_GPIO          GPIO_NUM_15
+#define BOARD_WEB_CONFIG_ACTIVE_LEVEL  0
+#define BOARD_WEB_AP_SSID              "Relay-WebConfig"
+#define BOARD_WEB_AP_PASSWORD          "12345678"
+
 #define BOARD_RS485_UART               UART_NUM_2
 /* Schematic nets: TXD2=IO13, RXD2=IO14, 485C=IO19. */
 #define BOARD_RS485_TX_GPIO            GPIO_NUM_13
