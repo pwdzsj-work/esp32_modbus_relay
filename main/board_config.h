@@ -14,10 +14,10 @@
  */
 #define BOARD_RELAY_ACTIVE_LEVEL       1
 #define BOARD_RELAY_INACTIVE_LEVEL     0
-#define BOARD_RELAY1_GPIO              GPIO_NUM_33
-#define BOARD_RELAY2_GPIO              GPIO_NUM_25
-#define BOARD_RELAY3_GPIO              GPIO_NUM_26
-#define BOARD_RELAY4_GPIO              GPIO_NUM_27
+#define BOARD_RELAY1_GPIO              GPIO_NUM_25
+#define BOARD_RELAY2_GPIO              GPIO_NUM_26
+#define BOARD_RELAY3_GPIO              GPIO_NUM_27
+#define BOARD_RELAY4_GPIO              GPIO_NUM_33
 
 /* NQ inputs are PC817 collectors with 10 k pull-ups: asserted input reads low. */
 #define BOARD_NQ_ACTIVE_LEVEL          0

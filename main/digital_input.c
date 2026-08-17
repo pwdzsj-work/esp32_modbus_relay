@@ -11,7 +11,7 @@ static const char *TAG = "INPUT";
 
 static const gpio_num_t s_gpio[BOARD_INPUT_COUNT] = {
     BOARD_NQ1_GPIO, BOARD_NQ2_GPIO, BOARD_NQ3_GPIO, BOARD_NQ4_GPIO,
-    BOARD_NQ8_GPIO, BOARD_NQ7_GPIO, BOARD_NQ6_GPIO, BOARD_NQ5_GPIO
+    BOARD_NQ5_GPIO, BOARD_NQ6_GPIO, BOARD_NQ7_GPIO, BOARD_NQ8_GPIO
 };
 static uint8_t s_last_mask;
 static TickType_t s_last_feedback_log;
@@ -39,11 +39,11 @@ static void log_relay_feedback(uint8_t input_mask)
 {
     uint8_t feedback = input_mask >> BOARD_RELAY_FEEDBACK_FIRST_INPUT;
     ESP_LOGI(TAG,
-             "Relay feedback: R1=%s R2=%s R3=%s R4=%s (mask=0x%X)",
-             (feedback & (1U << 0)) ? "PULLED_IN" : "RELEASED",
-             (feedback & (1U << 1)) ? "PULLED_IN" : "RELEASED",
-             (feedback & (1U << 2)) ? "PULLED_IN" : "RELEASED",
-             (feedback & (1U << 3)) ? "PULLED_IN" : "RELEASED",
+             "Relay drive feedback: R1=%s R2=%s R3=%s R4=%s (mask=0x%X)",
+             (feedback & (1U << 0)) ? "ACTIVE" : "INACTIVE",
+             (feedback & (1U << 1)) ? "ACTIVE" : "INACTIVE",
+             (feedback & (1U << 2)) ? "ACTIVE" : "INACTIVE",
+             (feedback & (1U << 3)) ? "ACTIVE" : "INACTIVE",
              feedback & 0x0FU);
 }
 

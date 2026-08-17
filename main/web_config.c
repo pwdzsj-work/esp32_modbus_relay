@@ -64,6 +64,8 @@ static void copy_wifi_field(uint8_t *destination, size_t destination_size,
     memcpy(destination, source, length);
 }
 
+/* Web page source is UTF-8.  Keep commanded output and NQ feedback separate:
+ * neither one is proof that the relay contacts have mechanically closed. */
 static const char s_index_html[] =
     "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -91,8 +93,10 @@ static const char s_index_html[] =
     "<input name='ssid' maxlength='32' required><label>Wi-Fi密码</label>"
     "<input name='password' type='password' maxlength='64'>"
     "<button type='submit'>保存并连接</button></form></section>"
-    "<section class='card'><h2>继电器控制</h2><div id='relays' "
-    "class='grid'></div></section><section class='card'><h2>继电器每日定时"
+    "<section class='card'><h2>继电器控制</h2>"
+    "<div class='muted'>NQ不是24V电源检测：关闭命令时NQ未动作属于正常；只有开启命令后才应收到NQ驱动反馈。本机硬件无法检测触点是否实际吸合。</div>"
+    "<div id='relays' class='grid'></div></section>"
+    "<section class='card'><h2>继电器每日定时"
     "</h2><div class='muted'>启用后按RV-3028时间自动控制，支持跨午夜。</div>"
     "<div id='schedules' class='grid'></div></section>"
     "<section class='card'><h2>输入检测 "
@@ -116,19 +120,23 @@ static const char s_index_html[] =
     "schedulesRendered=false;load()}catch(e){toast(e.message)}}"
     "function card(name,on,buttons=''){return `<div class='item'><div><span "
     "class='dot ${on?'on':''}'></span>${name}</div>${buttons}</div>`}"
+    "function feedbackText(cmd,fb){if(cmd&&fb)return '已动作';"
+    "if(cmd&&!fb)return '未收到反馈（请检查24V及驱动）';"
+    "if(!cmd&&fb)return '关闭命令下仍有效（异常）';return '未动作（正常待机）'}"
     "async function load(){try{let s=await (await fetch('/api/status',{cache:"
     "'no-store'})).json();$('#wifi').textContent=s.wifi.connected?`已连接 "
     "${s.wifi.ssid}，IP：${s.wifi.ip}`:'未连接路由器；热点地址：192.168.4.1';"
     "$('#relays').innerHTML=[0,1,2,3].map(i=>card(`继电器 ${i+1}<br><span "
-    "class='muted'>实际反馈：${s.relay_feedback&(1<<i)?'吸合':'释放'}</span>`,"
-    "s.relays&(1<<i),`<br><button onclick='relay(${i},1)'>吸合</button><button "
-    "class='offbtn' onclick='relay(${i},0)'>释放</button>`)).join('');"
+    "class='muted'>控制命令：${s.relay_commands&(1<<i)?'开启':'关闭'}<br>NQ驱动反馈："
+    "${feedbackText(s.relay_commands&(1<<i),s.relay_feedback&(1<<i))}</span>`,"
+    "s.relay_feedback&(1<<i),`<br><button onclick='relay(${i},1)'>开启命令</button><button "
+    "class='offbtn' onclick='relay(${i},0)'>关闭命令</button>`)).join('');"
     "if(!schedulesRendered){$('#schedules').innerHTML=s.schedules.map((v,i)=>"
     "`<div class='item'>"
     "<b>继电器 ${i+1}</b><br><label><input id='sen${i}' type='checkbox' "
-    "${v[0]?'checked':''}> 启用</label><br>吸合时间<input id='son${i}' "
+    "${v[0]?'checked':''}> 启用</label><br>开启命令时间<input id='son${i}' "
     "type='time' value='${String(v[1]).padStart(2,'0')}:${String(v[2])."
-    "padStart(2,'0')}'>释放时间<input id='soff${i}' type='time' value='"
+    "padStart(2,'0')}'>关闭命令时间<input id='soff${i}' type='time' value='"
     "${String(v[3]).padStart(2,'0')}:${String(v[4]).padStart(2,'0')}'>"
     "<button onclick='saveSchedule(${i})'>保存定时</button></div>`).join('');"
     "schedulesRendered=true}"
@@ -218,7 +226,7 @@ static esp_err_t receive_body(httpd_req_t *req, char *body, size_t size)
 
 static esp_err_t send_json(httpd_req_t *req, const char *json)
 {
-    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_sendstr(req, json);
 }
@@ -349,7 +357,7 @@ static esp_err_t status_handler(httpd_req_t *req)
 
     char json[1024];
     snprintf(json, sizeof(json),
-             "{\"relays\":%u,\"relay_feedback\":%u,\"inputs\":%u,"
+             "{\"relay_commands\":%u,\"relay_feedback\":%u,\"inputs\":%u,"
              "\"analog\":[%u,%u,%u,%u],\"modes\":[%u,%u,%u,%u],"
              "\"voltage\":[%u,%u,%u,%u],"
              "\"current\":[%u,%u,%u,%u],"

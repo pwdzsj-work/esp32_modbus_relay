@@ -8,7 +8,7 @@
 
 static const char *TAG = "RELAY";
 static const gpio_num_t s_gpio[BOARD_RELAY_COUNT] = {
-    BOARD_RELAY4_GPIO, BOARD_RELAY3_GPIO, BOARD_RELAY2_GPIO, BOARD_RELAY1_GPIO
+    BOARD_RELAY1_GPIO, BOARD_RELAY2_GPIO, BOARD_RELAY3_GPIO, BOARD_RELAY4_GPIO
 };
 static uint8_t s_commanded_mask;
 static SemaphoreHandle_t s_lock;

@@ -138,7 +138,8 @@ static bool read_holding_reg(uint16_t address, uint16_t *value)
 {
     if (address >= REG_MODE_BASE && address < REG_MODE_BASE + 4)
         *value = analog_input_get_mode(address - REG_MODE_BASE);
-    else if (address == REG_RELAY_MASK) *value = relay_driver_get_mask();
+    else if (address == REG_RELAY_MASK)
+        *value = relay_driver_get_mask();
     else if (address == REG_INPUT_MASK) *value = digital_input_get_mask();
     else if (rv3028_modbus_read_register(address, value)) return true;
     else return rs485_control_read_register(address, value);
