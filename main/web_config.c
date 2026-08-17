@@ -27,6 +27,7 @@
 #define WEB_NVS_NAMESPACE "webcfg"
 #define WEB_BODY_MAX       256
 #define WEB_SWITCH_HOLD_MS  3000
+#define WEB_SWITCH_DEBOUNCE_MS 50
 #define WEB_SCHEDULE_CHECK_MS 1000
 #define WEB_SCHEDULE_NVS_KEY "schedule"
 
@@ -43,9 +44,11 @@ static bool s_sta_has_credentials;
 static bool s_sta_connected;
 static bool s_switch_initialized;
 static bool s_switch_low;
+static bool s_switch_raw_low;
 static bool s_switch_action_done;
 static bool s_web_started;
 static TickType_t s_switch_low_since;
+static TickType_t s_switch_raw_changed_at;
 static TickType_t s_last_schedule_check;
 static relay_schedule_t s_schedules[BOARD_RELAY_COUNT];
 static SemaphoreHandle_t s_schedule_lock;
@@ -116,8 +119,9 @@ static const char s_index_html[] =
     "async function load(){try{let s=await (await fetch('/api/status',{cache:"
     "'no-store'})).json();$('#wifi').textContent=s.wifi.connected?`已连接 "
     "${s.wifi.ssid}，IP：${s.wifi.ip}`:'未连接路由器；热点地址：192.168.4.1';"
-    "$('#relays').innerHTML=[0,1,2,3].map(i=>card(`继电器 ${i+1}`,s.relays&"
-    "(1<<i),`<br><button onclick='relay(${i},1)'>吸合</button><button "
+    "$('#relays').innerHTML=[0,1,2,3].map(i=>card(`继电器 ${i+1}<br><span "
+    "class='muted'>实际反馈：${s.relay_feedback&(1<<i)?'吸合':'释放'}</span>`,"
+    "s.relays&(1<<i),`<br><button onclick='relay(${i},1)'>吸合</button><button "
     "class='offbtn' onclick='relay(${i},0)'>释放</button>`)).join('');"
     "if(!schedulesRendered){$('#schedules').innerHTML=s.schedules.map((v,i)=>"
     "`<div class='item'>"
@@ -303,7 +307,7 @@ static void apply_relay_schedules(void)
                                       now_minute < off_minute
                                 : now_minute >= on_minute ||
                                       now_minute < off_minute;
-        if (relay_driver_get((uint8_t)i) != should_be_on) {
+        if (relay_driver_get_commanded((uint8_t)i) != should_be_on) {
             esp_err_t err = relay_driver_set((uint8_t)i, should_be_on);
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "Schedule set relay %d %s at %02u:%02u",
@@ -345,7 +349,7 @@ static esp_err_t status_handler(httpd_req_t *req)
 
     char json[1024];
     snprintf(json, sizeof(json),
-             "{\"relays\":%u,\"inputs\":%u,"
+             "{\"relays\":%u,\"relay_feedback\":%u,\"inputs\":%u,"
              "\"analog\":[%u,%u,%u,%u],\"modes\":[%u,%u,%u,%u],"
              "\"voltage\":[%u,%u,%u,%u],"
              "\"current\":[%u,%u,%u,%u],"
@@ -355,7 +359,8 @@ static esp_err_t status_handler(httpd_req_t *req)
              "\"hour\":%u,\"minute\":%u,\"second\":%u},"
              "\"wifi\":{\"connected\":%s,\"ssid\":\"%s\","
              "\"ip\":\"" IPSTR "\"}}",
-             relay_driver_get_mask(), digital_input_get_mask(),
+             relay_driver_get_commanded_mask(), relay_driver_get_mask(),
+             digital_input_get_mask(),
              analog[0], analog[1], analog[2], analog[3],
              modes[0], modes[1], modes[2], modes[3],
              voltage[0], voltage[1], voltage[2], voltage[3],
@@ -724,11 +729,16 @@ esp_err_t web_config_start_if_requested(void)
 
     s_switch_initialized = true;
     s_switch_low = false;
+    s_switch_raw_low = gpio_get_level(BOARD_WEB_CONFIG_GPIO) ==
+                       BOARD_WEB_CONFIG_ACTIVE_LEVEL;
+    s_switch_raw_changed_at = xTaskGetTickCount();
     s_switch_action_done = false;
     s_web_started = false;
     ESP_LOGI(TAG,
-             "SW3 runtime detection ready: GPIO%d, hold low for %d ms",
-             BOARD_WEB_CONFIG_GPIO, WEB_SWITCH_HOLD_MS);
+             "SW3 runtime detection ready: GPIO%d, debounce=%d ms, "
+             "hold low for %d ms",
+             BOARD_WEB_CONFIG_GPIO, WEB_SWITCH_DEBOUNCE_MS,
+             WEB_SWITCH_HOLD_MS);
     return ESP_OK;
 }
 
@@ -741,24 +751,31 @@ void web_config_poll(void)
         s_last_schedule_check = now;
         apply_relay_schedules();
     }
-    bool low = gpio_get_level(BOARD_WEB_CONFIG_GPIO) ==
-               BOARD_WEB_CONFIG_ACTIVE_LEVEL;
-    if (!low) {
+    bool raw_low = gpio_get_level(BOARD_WEB_CONFIG_GPIO) ==
+                   BOARD_WEB_CONFIG_ACTIVE_LEVEL;
+    if (raw_low != s_switch_raw_low) {
+        s_switch_raw_low = raw_low;
+        s_switch_raw_changed_at = now;
+    }
+
+    if (s_switch_raw_low != s_switch_low &&
+        now - s_switch_raw_changed_at >=
+            pdMS_TO_TICKS(WEB_SWITCH_DEBOUNCE_MS)) {
+        s_switch_low = s_switch_raw_low;
         if (s_switch_low) {
-            ESP_LOGI(TAG, "SW3 released; next long press is armed");
+            s_switch_action_done = false;
+            s_switch_low_since = now;
+            ESP_LOGI(TAG,
+                     "SW3 debounced low; hold %d seconds to %s hotspot",
+                     WEB_SWITCH_HOLD_MS / 1000,
+                     s_web_started ? "stop" : "start");
+        } else {
+            ESP_LOGI(TAG, "SW3 debounced release; next long press is armed");
+            s_switch_action_done = false;
         }
-        s_switch_low = false;
-        s_switch_action_done = false;
-        return;
     }
 
     if (!s_switch_low) {
-        s_switch_low = true;
-        s_switch_action_done = false;
-        s_switch_low_since = now;
-        ESP_LOGI(TAG, "SW3 low detected; hold %d seconds to %s hotspot",
-                 WEB_SWITCH_HOLD_MS / 1000,
-                 s_web_started ? "stop" : "start");
         return;
     }
 

@@ -34,6 +34,7 @@
 #define BOARD_NQ6_GPIO                 GPIO_NUM_35
 #define BOARD_NQ7_GPIO                 GPIO_NUM_36
 #define BOARD_NQ8_GPIO                 GPIO_NUM_39
+#define BOARD_RELAY_FEEDBACK_FIRST_INPUT 4
 #define BOARD_NQ_FEEDBACK_GPIO_MASK    ((1ULL << BOARD_NQ5_GPIO) | \
                                         (1ULL << BOARD_NQ6_GPIO) | \
                                         (1ULL << BOARD_NQ7_GPIO) | \

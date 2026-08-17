@@ -6,7 +6,6 @@
 #include "freertos/task.h"
 
 static const char *TAG = "INPUT";
-#define RELAY_FEEDBACK_FIRST_BIT 4
 #define RELAY_FEEDBACK_LOG_PERIOD_MS 1000
 #define INPUT_SIGNAL_LOG_PERIOD_MS 1000
 
@@ -38,7 +37,7 @@ static void log_input_signals(uint8_t active_mask)
 
 static void log_relay_feedback(uint8_t input_mask)
 {
-    uint8_t feedback = input_mask >> RELAY_FEEDBACK_FIRST_BIT;
+    uint8_t feedback = input_mask >> BOARD_RELAY_FEEDBACK_FIRST_INPUT;
     ESP_LOGI(TAG,
              "Relay feedback: R1=%s R2=%s R3=%s R4=%s (mask=0x%X)",
              (feedback & (1U << 0)) ? "PULLED_IN" : "RELEASED",
@@ -114,7 +113,7 @@ void digital_input_poll_and_log(void)
                 ESP_LOGI(TAG, "NQ%u -> %u (GPIO%d=%d)%s", i + 1,
                          (mask >> i) & 1U, s_gpio[i],
                          gpio_get_level(s_gpio[i]),
-                         i >= RELAY_FEEDBACK_FIRST_BIT
+                         i >= BOARD_RELAY_FEEDBACK_FIRST_INPUT
                              ? " [relay feedback]" : "");
             }
         }
@@ -132,7 +131,7 @@ void digital_input_poll_and_log(void)
     }
 
     bool feedback_changed =
-        (changed & (0x0FU << RELAY_FEEDBACK_FIRST_BIT)) != 0;
+        (changed & (0x0FU << BOARD_RELAY_FEEDBACK_FIRST_INPUT)) != 0;
     if (feedback_changed ||
         now - s_last_feedback_log >=
             pdMS_TO_TICKS(RELAY_FEEDBACK_LOG_PERIOD_MS)) {

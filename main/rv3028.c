@@ -11,15 +11,23 @@
 #define RV3028_REG_MINUTES    0x01
 #define RV3028_REG_STATUS     0x0E
 #define RV3028_REG_CONTROL2   0x10
+#define RV3028_REG_EE_BACKUP  0x37
 #define RV3028_STATUS_PORF    (1U << 0)
 #define RV3028_CONTROL2_12_24 (1U << 1)
+#define RV3028_BACKUP_FEDE     (1U << 4)
+#define RV3028_BACKUP_BSM_LSM  (3U << 2)
 #define RV3028_IO_TIMEOUT_MS  100
 #define RV3028_LOG_PERIOD_MS  1000
+#define RV3028_INVALID_WARN_PERIOD_MS 60000
 
 static const char *TAG = "RTC";
 static i2c_master_dev_handle_t s_dev;
 static SemaphoreHandle_t s_lock;
 static TickType_t s_last_log;
+static TickType_t s_last_invalid_warning;
+static uint8_t s_last_status;
+static bool s_last_calendar_valid;
+static bool s_invalid_warning_active;
 
 static uint8_t bin_to_bcd(uint8_t value)
 {
@@ -99,6 +107,8 @@ static esp_err_t get_time_locked(rv3028_datetime_t *dt, bool *valid)
     dt->year = 2000U + bcd_to_bin(regs[6]);
 
     bool values_valid = datetime_is_valid(dt) && dt->weekday <= 6;
+    s_last_status = status;
+    s_last_calendar_valid = values_valid;
     if (valid) *valid = values_valid && !(status & RV3028_STATUS_PORF);
     return ESP_OK;
 }
@@ -128,7 +138,13 @@ static esp_err_t set_time_locked(const rv3028_datetime_t *dt)
     err = read_regs(RV3028_REG_STATUS, &status, 1);
     if (err != ESP_OK) return err;
     status &= (uint8_t)~RV3028_STATUS_PORF;
-    return write_regs(RV3028_REG_STATUS, &status, 1);
+    err = write_regs(RV3028_REG_STATUS, &status, 1);
+    if (err != ESP_OK) return err;
+
+    /* Verify that calibration really cleared the latched power-loss flag. */
+    err = read_regs(RV3028_REG_STATUS, &status, 1);
+    if (err != ESP_OK) return err;
+    return (status & RV3028_STATUS_PORF) ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
 static void log_time(void)
@@ -144,11 +160,25 @@ static void log_time(void)
         return;
     }
     if (!valid) {
-        ESP_LOGW(TAG,
-                 "RV-3028 time invalid (PORF or invalid calendar); "
-                 "set 0x0300..0x0305 via Modbus");
+        TickType_t now = xTaskGetTickCount();
+        if (!s_invalid_warning_active ||
+            now - s_last_invalid_warning >=
+                pdMS_TO_TICKS(RV3028_INVALID_WARN_PERIOD_MS)) {
+            if (s_last_status & RV3028_STATUS_PORF) {
+                ESP_LOGW(TAG,
+                         "RV-3028 PORF is set; synchronize time once to "
+                         "clear the latched power-loss flag");
+            } else if (!s_last_calendar_valid) {
+                ESP_LOGW(TAG,
+                         "RV-3028 calendar registers are invalid; "
+                         "synchronize time once");
+            }
+            s_last_invalid_warning = now;
+            s_invalid_warning_active = true;
+        }
         return;
     }
+    s_invalid_warning_active = false;
     ESP_LOGI(TAG, "%04u-%02u-%02u %s %02u:%02u:%02u",
              dt.year, dt.month, dt.date, weekday_name[dt.weekday],
              dt.hour, dt.minute, dt.second);
@@ -179,7 +209,26 @@ esp_err_t rv3028_init(void)
         if (err != ESP_OK) return err;
     }
 
-    ESP_LOGI(TAG, "RV-3028 initialized at I2C address 0x%02X (24-hour mode)",
+    /*
+     * A non-rechargeable backup battery is fitted: enable Level Switching
+     * Mode and Fast Edge Detection in the active RAM mirror. Keep trickle
+     * charging disabled. The setting remains active while VBACKUP keeps the
+     * RTC powered and is restored by this initialization after a full loss.
+     */
+    uint8_t backup;
+    err = read_regs(RV3028_REG_EE_BACKUP, &backup, 1);
+    if (err != ESP_OK) return err;
+    uint8_t backup_lsm = (backup & 0x80U) |
+                         RV3028_BACKUP_FEDE |
+                         RV3028_BACKUP_BSM_LSM;
+    if (backup != backup_lsm) {
+        err = write_regs(RV3028_REG_EE_BACKUP, &backup_lsm, 1);
+        if (err != ESP_OK) return err;
+    }
+
+    ESP_LOGI(TAG,
+             "RV-3028 initialized at 0x%02X "
+             "(24-hour, LSM battery backup, trickle charge off)",
              BOARD_RV3028_ADDR);
     s_last_log = xTaskGetTickCount();
     log_time();
@@ -202,6 +251,7 @@ esp_err_t rv3028_set_time(const rv3028_datetime_t *datetime)
     esp_err_t err = set_time_locked(datetime);
     xSemaphoreGive(s_lock);
     if (err == ESP_OK) {
+        s_invalid_warning_active = false;
         ESP_LOGI(TAG, "Time set to %04u-%02u-%02u %02u:%02u:%02u",
                  datetime->year, datetime->month, datetime->date,
                  datetime->hour, datetime->minute, datetime->second);
