@@ -105,10 +105,13 @@ static const char s_index_html[] =
     "class='grid'></div></section><section class='card'><h2>设备校时</h2>"
     "<div id='rtc' class='muted'>--</div><button onclick='syncTime()'>"
     "同步浏览器时间</button></section></main><div id='msg'></div><script>"
-    "const $=s=>document.querySelector(s);let schedulesRendered=false;"
+    "const $=s=>document.querySelector(s);let schedulesRendered=false,"
+    "statusLoading=false;async function request(u,o){let c=new AbortController,"
+    "t=setTimeout(()=>c.abort(),5000);try{return await fetch(u,Object.assign({},"
+    "o,{signal:c.signal}))}finally{clearTimeout(t)}}"
     "function toast(t){let e=$('#msg');"
     "e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display="
-    "'none',2200)}async function post(u,o){let r=await fetch(u,{method:'POST',"
+    "'none',2200)}async function post(u,o){let r=await request(u,{method:'POST',"
     "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new "
     "URLSearchParams(o)}),j=await r.json();if(!r.ok)throw Error(j.error||"
     "'操作失败');return j}async function relay(ch,on){try{await post("
@@ -123,8 +126,9 @@ static const char s_index_html[] =
     "function feedbackText(cmd,fb){if(cmd&&fb)return '已动作';"
     "if(cmd&&!fb)return '未收到反馈（请检查24V及驱动）';"
     "if(!cmd&&fb)return '关闭命令下仍有效（异常）';return '未动作（正常待机）'}"
-    "async function load(){try{let s=await (await fetch('/api/status',{cache:"
-    "'no-store'})).json();$('#wifi').textContent=s.wifi.connected?`已连接 "
+    "async function load(){if(statusLoading)return;statusLoading=true;try{let r="
+    "await request('/api/status',{cache:'no-store'});if(!r.ok)throw Error();let s="
+    "await r.json();$('#wifi').textContent=s.wifi.connected?`已连接 "
     "${s.wifi.ssid}，IP：${s.wifi.ip}`:'未连接路由器；热点地址：192.168.4.1';"
     "$('#relays').innerHTML=[0,1,2,3].map(i=>card(`继电器 ${i+1}<br><span "
     "class='muted'>控制命令：${s.relay_commands&(1<<i)?'开启':'关闭'}<br>NQ驱动反馈："
@@ -148,14 +152,16 @@ static const char s_index_html[] =
     "$('#rtc').textContent=s.rtc.valid?`${s.rtc.year}-${String(s.rtc.month)."
     "padStart(2,'0')}-${String(s.rtc.day).padStart(2,'0')} ${String(s.rtc."
     "hour).padStart(2,'0')}:${String(s.rtc.minute).padStart(2,'0')}:${String("
-    "s.rtc.second).padStart(2,'0')}`:'RTC时间无效'}catch(e){toast('状态读取失败')}}"
+    "s.rtc.second).padStart(2,'0')}`:'RTC时间无效'}catch(e){toast('状态读取失败')}"
+    "finally{statusLoading=false}}"
     "$('#wf').onsubmit=async e=>{e.preventDefault();let f=new FormData(e.target);"
     "try{await post('/api/wifi',{ssid:f.get('ssid'),password:f.get('password')"
     "});toast('已保存，正在连接')}catch(x){toast(x.message)}};async function "
     "syncTime(){let d=new Date;try{await post('/api/time',{year:d.getFullYear()"
     ",month:d.getMonth()+1,day:d.getDate(),hour:d.getHours(),minute:d."
     "getMinutes(),second:d.getSeconds()});toast('校时成功');load()}catch(e){"
-    "toast(e.message)}}load();setInterval(load,1000);</script></body></html>";
+    "toast(e.message)}}async function poll(){await load();setTimeout(poll,1000)}poll();"
+    "</script></body></html>";
 
 static int hex_value(char c)
 {
@@ -574,6 +580,10 @@ static esp_err_t start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 6144;
+    /* Reclaim stale browser sockets after Wi-Fi interruptions. */
+    config.lru_purge_enable = true;
+    config.recv_wait_timeout = 5;
+    config.send_wait_timeout = 5;
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) return err;
     const httpd_uri_t routes[] = {
