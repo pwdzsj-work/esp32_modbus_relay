@@ -11,6 +11,8 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
@@ -20,6 +22,7 @@
 #include "nvs_flash.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +33,8 @@
 #define WEB_SWITCH_DEBOUNCE_MS 50
 #define WEB_SCHEDULE_CHECK_MS 1000
 #define WEB_SCHEDULE_NVS_KEY "schedule"
+#define WEB_OTA_BUFFER_SIZE 1024
+#define WEB_OTA_RECV_TIMEOUTS 3
 
 typedef struct {
     uint8_t enabled;
@@ -94,7 +99,7 @@ static const char s_index_html[] =
     "<input name='password' type='password' maxlength='64'>"
     "<button type='submit'>保存并连接</button></form></section>"
     "<section class='card'><h2>继电器控制</h2>"
-    "<div class='muted'>NQ不是24V电源检测：关闭命令时NQ未动作属于正常；只有开启命令后才应收到NQ驱动反馈。本机硬件无法检测触点是否实际吸合。</div>"
+    "<div class='muted'>卡片绿点只表示控制命令。NQ不是24V电源检测：关闭命令时NQ未动作属于正常；只有开启命令后才应收到NQ驱动反馈。本机硬件无法检测触点是否实际吸合。</div>"
     "<div id='relays' class='grid'></div></section>"
     "<section class='card'><h2>继电器每日定时"
     "</h2><div class='muted'>启用后按RV-3028时间自动控制，支持跨午夜。</div>"
@@ -102,11 +107,19 @@ static const char s_index_html[] =
     "<section class='card'><h2>输入检测 "
     "NQ1–NQ4</h2><div id='inputs' class='grid'></div></section>"
     "<section class='card'><h2>模拟量检测</h2><div id='analog' "
-    "class='grid'></div></section><section class='card'><h2>设备校时</h2>"
+    "class='grid'></div></section><section class='card'><h2>固件升级（OTA）</h2>"
+    "<div class='muted'>请选择本项目生成的 app 固件 .bin。上传期间请勿断电，"
+    "成功后设备会自动重启。</div><label>OTA 密码</label>"
+    "<input id='otaPassword' type='password' autocomplete='current-password'>"
+    "<input id='otaFile' type='file' accept='.bin,application/octet-stream'>"
+    "<button id='otaButton' onclick='uploadFirmware()'>上传并升级</button>"
+    "<div id='otaProgress' class='muted'>尚未选择固件</div></section>"
+    "<section class='card'><h2>设备校时</h2>"
     "<div id='rtc' class='muted'>--</div><button onclick='syncTime()'>"
     "同步浏览器时间</button></section></main><div id='msg'></div><script>"
     "const $=s=>document.querySelector(s);let schedulesRendered=false,"
-    "statusLoading=false;async function request(u,o){let c=new AbortController,"
+    "statusLoading=false,otaUploading=false;async function request(u,o){let c="
+    "new AbortController,"
     "t=setTimeout(()=>c.abort(),5000);try{return await fetch(u,Object.assign({},"
     "o,{signal:c.signal}))}finally{clearTimeout(t)}}"
     "function toast(t){let e=$('#msg');"
@@ -126,14 +139,15 @@ static const char s_index_html[] =
     "function feedbackText(cmd,fb){if(cmd&&fb)return '已动作';"
     "if(cmd&&!fb)return '未收到反馈（请检查24V及驱动）';"
     "if(!cmd&&fb)return '关闭命令下仍有效（异常）';return '未动作（正常待机）'}"
-    "async function load(){if(statusLoading)return;statusLoading=true;try{let r="
+    "async function load(){if(statusLoading||otaUploading)return;statusLoading="
+    "true;try{let r="
     "await request('/api/status',{cache:'no-store'});if(!r.ok)throw Error();let s="
     "await r.json();$('#wifi').textContent=s.wifi.connected?`已连接 "
     "${s.wifi.ssid}，IP：${s.wifi.ip}`:'未连接路由器；热点地址：192.168.4.1';"
     "$('#relays').innerHTML=[0,1,2,3].map(i=>card(`继电器 ${i+1}<br><span "
     "class='muted'>控制命令：${s.relay_commands&(1<<i)?'开启':'关闭'}<br>NQ驱动反馈："
     "${feedbackText(s.relay_commands&(1<<i),s.relay_feedback&(1<<i))}</span>`,"
-    "s.relay_feedback&(1<<i),`<br><button onclick='relay(${i},1)'>开启命令</button><button "
+    "s.relay_commands&(1<<i),`<br><button onclick='relay(${i},1)'>开启命令</button><button "
     "class='offbtn' onclick='relay(${i},0)'>关闭命令</button>`)).join('');"
     "if(!schedulesRendered){$('#schedules').innerHTML=s.schedules.map((v,i)=>"
     "`<div class='item'>"
@@ -154,6 +168,20 @@ static const char s_index_html[] =
     "hour).padStart(2,'0')}:${String(s.rtc.minute).padStart(2,'0')}:${String("
     "s.rtc.second).padStart(2,'0')}`:'RTC时间无效'}catch(e){toast('状态读取失败')}"
     "finally{statusLoading=false}}"
+    "function uploadFirmware(){let f=$('#otaFile').files[0],p=$('#otaPassword')."
+    "value,b=$('#otaButton'),m=$('#otaProgress');if(!f){toast('请选择固件文件');"
+    "return}if(!p){toast('请输入 OTA 密码');return}if(!confirm(`确认升级 ${f.name}"
+    "（${(f.size/1024).toFixed(1)} KB）？`))return;otaUploading=true;b.disabled="
+    "true;m.textContent='准备上传…';let x=new XMLHttpRequest;x.open('POST',"
+    "'/api/ota');x.timeout=120000;x.setRequestHeader('Content-Type',"
+    "'application/octet-stream');x.setRequestHeader('X-OTA-Password',p);"
+    "x.upload.onprogress=e=>{if(e.lengthComputable)m.textContent=`正在上传："
+    "${Math.round(e.loaded*100/e.total)}%`};let failed=t=>{otaUploading=false;"
+    "b.disabled=false;m.textContent=t;toast(t)};x.onload=()=>{if(x.status===200)"
+    "{m.textContent='升级成功，设备正在重启…';toast('升级成功')}else{let t="
+    "'升级失败';try{t=JSON.parse(x.responseText).error||t}catch(e){}failed(t)}};"
+    "x.onerror=()=>failed('上传连接失败');x.ontimeout=()=>failed('上传超时');"
+    "x.onabort=()=>failed('上传已取消');x.send(f)}"
     "$('#wf').onsubmit=async e=>{e.preventDefault();let f=new FormData(e.target);"
     "try{await post('/api/wifi',{ssid:f.get('ssid'),password:f.get('password')"
     "});toast('已保存，正在连接')}catch(x){toast(x.message)}};async function "
@@ -556,6 +584,102 @@ static esp_err_t wifi_handler(httpd_req_t *req)
     return send_json(req, "{\"ok\":true}");
 }
 
+static bool ota_password_valid(httpd_req_t *req)
+{
+    size_t expected = strlen(BOARD_WEB_OTA_PASSWORD);
+    size_t length = httpd_req_get_hdr_value_len(req, "X-OTA-Password");
+    if (length != expected || length == 0) return false;
+    char password[sizeof(BOARD_WEB_OTA_PASSWORD)];
+    if (httpd_req_get_hdr_value_str(req, "X-OTA-Password", password,
+                                    sizeof(password)) != ESP_OK) {
+        return false;
+    }
+    return strcmp(password, BOARD_WEB_OTA_PASSWORD) == 0;
+}
+
+static void ota_restart_task(void *argument)
+{
+    (void)argument;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
+static esp_err_t ota_handler(httpd_req_t *req)
+{
+    if (!ota_password_valid(req)) {
+        return send_error(req, "401 Unauthorized", "OTA密码错误");
+    }
+    if (req->content_len <= 0) {
+        return send_error(req, "400 Bad Request", "固件文件为空");
+    }
+
+    const esp_partition_t *partition =
+        esp_ota_get_next_update_partition(NULL);
+    if (!partition) {
+        return send_error(req, "500 Internal Server Error", "没有可用OTA分区");
+    }
+    if ((size_t)req->content_len > partition->size) {
+        return send_error(req, "413 Payload Too Large", "固件超过OTA分区容量");
+    }
+
+    ESP_LOGI(TAG, "OTA upload: %d bytes -> %s at 0x%08" PRIx32,
+             req->content_len, partition->label, partition->address);
+    esp_ota_handle_t handle = 0;
+    esp_err_t err = esp_ota_begin(partition, (size_t)req->content_len, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        return send_error(req, "500 Internal Server Error", "无法开始OTA升级");
+    }
+
+    uint8_t buffer[WEB_OTA_BUFFER_SIZE];
+    int remaining = req->content_len;
+    int timeout_count = 0;
+    while (remaining > 0) {
+        int received = httpd_req_recv(
+            req, (char *)buffer,
+            remaining < (int)sizeof(buffer) ? remaining : (int)sizeof(buffer));
+        if (received == HTTPD_SOCK_ERR_TIMEOUT &&
+            ++timeout_count <= WEB_OTA_RECV_TIMEOUTS) {
+            continue;
+        }
+        if (received <= 0) {
+            ESP_LOGE(TAG, "OTA receive failed with %d, %d bytes remaining",
+                     received, remaining);
+            esp_ota_abort(handle);
+            return send_error(req, "408 Request Timeout", "固件上传中断");
+        }
+        timeout_count = 0;
+        err = esp_ota_write(handle, buffer, (size_t)received);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
+            esp_ota_abort(handle);
+            return send_error(req, "500 Internal Server Error", "固件写入失败");
+        }
+        remaining -= received;
+    }
+
+    err = esp_ota_end(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA image validation failed: %s", esp_err_to_name(err));
+        return send_error(req, "400 Bad Request", "固件镜像校验失败");
+    }
+    err = esp_ota_set_boot_partition(partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Unable to select OTA partition: %s",
+                 esp_err_to_name(err));
+        return send_error(req, "500 Internal Server Error", "无法切换启动分区");
+    }
+
+    ESP_LOGI(TAG, "OTA complete; rebooting into '%s'", partition->label);
+    esp_err_t response_err = send_json(req, "{\"ok\":true,\"rebooting\":true}");
+    if (xTaskCreate(ota_restart_task, "ota_restart", 2048, NULL, 5, NULL) !=
+        pdPASS) {
+        ESP_LOGE(TAG, "Unable to create OTA restart task");
+        esp_restart();
+    }
+    return response_err;
+}
+
 static void wifi_event_handler(void *argument, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
@@ -594,6 +718,7 @@ static esp_err_t start_http_server(void)
          .handler = schedule_handler},
         {.uri = "/api/time", .method = HTTP_POST, .handler = time_handler},
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = wifi_handler},
+        {.uri = "/api/ota", .method = HTTP_POST, .handler = ota_handler},
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
         err = httpd_register_uri_handler(s_server, &routes[i]);

@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "relay_driver.h"
 #include "digital_input.h"
 #include "analog_input.h"
@@ -36,6 +37,14 @@ void app_main(void)
     ESP_ERROR_CHECK(modbus_slave_init());
     ESP_ERROR_CHECK(lora_receiver_init());
     ESP_ERROR_CHECK(web_config_start_if_requested());
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK &&
+        ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_ERROR_CHECK(esp_ota_mark_app_valid_cancel_rollback());
+        ESP_LOGI(TAG, "OTA image '%s' marked valid", running->label);
+    }
 
     ESP_LOGI(TAG,
              "Initialization complete: RS485/LoRa Modbus RTU slave=%u, 9600 8N1",

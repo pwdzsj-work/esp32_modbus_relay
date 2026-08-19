@@ -15,6 +15,7 @@ idf_component_register(
         "web_config.c"
     INCLUDE_DIRS "."
     REQUIRES
+        app_update
         driver
         esp_event
         esp_http_server

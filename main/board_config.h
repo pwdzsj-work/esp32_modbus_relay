@@ -55,6 +55,8 @@
 #define BOARD_WEB_CONFIG_ACTIVE_LEVEL  0
 #define BOARD_WEB_AP_SSID              "Relay-WebConfig"
 #define BOARD_WEB_AP_PASSWORD          "12345678"
+/* Required by the Web OTA upload endpoint. Change before deployment. */
+#define BOARD_WEB_OTA_PASSWORD         "relay-ota-2026"
 
 #define BOARD_RS485_UART               UART_NUM_2
 /* Schematic nets: TXD2=IO13, RXD2=IO14, 485C=IO19. */

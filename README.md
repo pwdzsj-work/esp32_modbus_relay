@@ -242,6 +242,19 @@ idf.py build
 idf.py -p COMx flash monitor
 ```
 
+### Web OTA 升级
+
+ESP32-WROOM-32E-N4 按 4 MB Flash 配置，分区表包含 `factory`、`ota_0` 和
+`ota_1` 三个 1 MB 应用分区。首次启用 OTA 时，必须通过串口执行一次完整的
+`idf.py flash`，以更新 Bootloader、分区表、OTA 数据和应用固件；不能只烧录 app
+固件。
+
+完成首次串口烧录后，长按 SW3 三秒启动 Web 页面，在“固件升级（OTA）”区域选择
+`build/esp32_modbus_relay.bin`，输入 OTA 密码并上传。默认 OTA 密码为
+`relay-ota-2026`，正式部署前应修改 `main/board_config.h` 中的
+`BOARD_WEB_OTA_PASSWORD`。上传成功后设备自动重启，新固件初始化成功后会确认镜像；
+若首次启动失败或看门狗复位，Bootloader 会回滚到上一固件。
+
 上电初始化时四路继电器全部释放。GPIO2 是启动绑带脚，也是 NQ2；外围电路
 必须保证复位采样期间不会把 GPIO2 拉低，否则 ESP32 可能无法从 Flash 启动。
 
