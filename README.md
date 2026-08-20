@@ -21,30 +21,29 @@ Espressif IDF 插件打开。默认目标 `esp32`，建议 ESP-IDF 5.4/5.5。
 - 支持功能码：01、02、03、04、05、06、0F、10、11
 - 修改参数请编辑 `main/board_config.h`
 
-### Qt/RS485/LoRa 设备扫描
+### LoRa MAC 广播发现
 
-Modbus 功能码 `0x11`（Report Server ID）可用于 RS485 或透明 LoRa
-链路上的设备扫描。固件会判断请求来自 RS485 还是 LoRa，并从同一链路返回
-响应。
-
-扫描默认地址 `1` 的请求：
+上位机使用 `AA 55` 广播发现协议代替遍历 Modbus 地址。发现请求格式为：
 
 ```text
-01 11 C0 2C
+AA 55 01 01 05 nonce_H nonce_L slotCount duration_H duration_L CRC_L CRC_H
 ```
 
-设备在线时返回以下内容（末尾 CRC 由固件自动生成）：
+推荐上位机使用 128 个时隙。终端收到合法请求后按以下公式选择回复时隙：
 
 ```text
-01 11 0F 01 FF 45 53 50 33 32 2D 52 45 4C 41 59 2D 34 FA 60
+slot = ModbusCRC16(MAC + nonce大端) % slotCount
+delayMs = slot * slotDurationMs
 ```
 
-其中 `0F` 是后续数据字节数，`01` 是 Server ID，`FF` 表示设备正在运行，
-后面的 ASCII 内容为 `ESP32-RELAY-4`。Qt 收到地址、功能码、长度和 CRC
-均正确的响应后，将该地址标记为上线；连续若干次轮询超时后标记为离线。
+回复命令为 `81`，负载依次包含原 nonce、真实 eFuse MAC、当前 Modbus
+地址、功能位图、继电器/数字输入/模拟输入通道数，以及 UTF-8 SKU。当前
+SKU 为 `ESP32-RELAY-4`，实际通道数为 `4/8/4`。相同 nonce 只回复一次；
+新 nonce 会取消尚未发送的旧回复。实现位于 `main/lora_discovery.c`。
 
-修改 `BOARD_MODBUS_SLAVE_ADDR` 后，`BOARD_MODBUS_SERVER_ID` 会自动采用相同
-地址。每个 LoRa 节点必须配置不同的从站地址。
+功能码 `0x11` 的原 Modbus 地址发现仍保留用于兼容和调试，但正式上位机
+不应再逐地址扫描。普通继电器控制、输入读取和 RTC 校时仍使用发现响应中的
+Modbus 短地址。每个 LoRa 节点的短地址必须唯一。
 
 ### LoRa 串口透传驱动
 
@@ -52,8 +51,8 @@ Modbus 功能码 `0x11`（Report Server ID）可用于 RS485 或透明 LoRa
 
 | 信号 | ESP32 引脚 |
 |---|---:|
-| LoRa RX（连接 ESP32 TX） | GPIO17 |
-| LoRa TX（连接 ESP32 RX） | GPIO16 |
+| LoRa RX（连接 ESP32 TX） | GPIO16 |
+| LoRa TX（连接 ESP32 RX） | GPIO17 |
 | GND | GND |
 
 默认串口参数为 `9600 8N1`。初始化和收发示例：

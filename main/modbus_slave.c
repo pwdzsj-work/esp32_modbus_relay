@@ -339,7 +339,7 @@ esp_err_t modbus_slave_init(void)
         return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "Modbus receive task created successfully");
     ESP_LOGI(TAG,
-             "LoRa discovery enabled: poll slave addresses with function 0x11");
+             "Legacy Modbus 0x11 discovery remains enabled on LoRa");
     return ESP_OK;
 }
 

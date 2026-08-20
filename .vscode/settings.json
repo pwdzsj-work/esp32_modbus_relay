@@ -3,5 +3,5 @@
   "idf.enableCCache": false,
   "idf.customExtraVars": {},
   "idf.currentSetup": "C:\\esp\\v5.5.5\\esp-idf",
-  "idf.portWin": "COM5"
+  "idf.portWin": "COM4"
 }

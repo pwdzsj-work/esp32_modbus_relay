@@ -78,4 +78,6 @@
  * transparent LoRa link.
  */
 #define BOARD_MODBUS_SERVER_ID         BOARD_MODBUS_SLAVE_ADDR
-#define BOARD_DEVICE_MODEL             "ESP32-RELAY-4"
+/* Stable product SKU reported by both discovery protocols. */
+#define BOARD_PRODUCT_SKU              "ESP32-RELAY-4"
+#define BOARD_DEVICE_MODEL             BOARD_PRODUCT_SKU

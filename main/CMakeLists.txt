@@ -5,6 +5,7 @@ idf_component_register(
         "ads1115.c"
         "analog_input.c"
         "digital_input.c"
+        "lora_discovery.c"
         "lora_periodic_sender.c"
         "lora_receiver.c"
         "lora_uart.c"
@@ -19,6 +20,7 @@ idf_component_register(
         driver
         esp_event
         esp_http_server
+        esp_hw_support
         esp_netif
         esp_wifi
         nvs_flash

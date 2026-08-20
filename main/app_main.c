@@ -12,7 +12,7 @@
 #include "web_config.h"
 
 static const char *TAG = "APP";
-#define APP_BUILD_TAG "rs485-lora-modbus-20260727"
+#define APP_BUILD_TAG "rs485-lora-mac-discovery-20260820"
 
 void app_main(void)
 {

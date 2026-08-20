@@ -17,8 +17,8 @@ extern "C" {
  * UART2 is already used by RS485 in this project, so LoRa uses UART1.
  */
 #define LORA_UART_DEFAULT_PORT           UART_NUM_1
-#define LORA_UART_DEFAULT_TX_GPIO        17
-#define LORA_UART_DEFAULT_RX_GPIO        16
+#define LORA_UART_DEFAULT_TX_GPIO        16
+#define LORA_UART_DEFAULT_RX_GPIO        17
 #define LORA_UART_DEFAULT_BAUD_RATE      9600
 #define LORA_UART_DEFAULT_RX_BUFFER_SIZE 1024
 #define LORA_UART_DEFAULT_TX_BUFFER_SIZE 0

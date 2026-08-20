@@ -1,5 +1,6 @@
 #include "lora_receiver.h"
 
+#include "lora_discovery.h"
 #include "lora_uart.h"
 #include "modbus_slave.h"
 
@@ -46,7 +47,9 @@ static void receive_task(void *argument)
         ESP_LOGI(TAG, "Received %d byte%s",
                  length, length == 1 ? "" : "s");
         ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, length, ESP_LOG_INFO);
-        modbus_slave_process_lora_frame(data, (size_t)length);
+        if (!lora_discovery_process_frame(data, (size_t)length)) {
+            modbus_slave_process_lora_frame(data, (size_t)length);
+        }
 
         if (length == sizeof(data)) {
             ESP_LOGW(TAG,
@@ -66,6 +69,14 @@ esp_err_t lora_receiver_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "LoRa UART initialization failed: %s",
                  esp_err_to_name(err));
+        return err;
+    }
+
+    err = lora_discovery_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LoRa discovery initialization failed: %s",
+                 esp_err_to_name(err));
+        lora_uart_deinit();
         return err;
     }
 
