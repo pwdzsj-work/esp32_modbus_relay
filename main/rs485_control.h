@@ -10,7 +10,7 @@
  * 0x0200 R/W command argument
  * 0x0201 R/W command trigger (writing executes the command)
  * 0x0202 R   result of the last command
- * 0x0203 R   current relay mask
+ * 0x0203 R   commanded relay mask
  *
  * Commands:
  * 1: Set one relay. Argument bits 7:0 = channel (1..4), bit 8 = state.

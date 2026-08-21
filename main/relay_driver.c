@@ -1,6 +1,5 @@
 #include "relay_driver.h"
 #include "board_config.h"
-#include "digital_input.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -49,19 +48,6 @@ esp_err_t relay_driver_set(uint8_t channel, bool on)
     }
     xSemaphoreGive(s_lock);
     return err;
-}
-
-bool relay_driver_get(uint8_t channel)
-{
-    if (channel >= BOARD_RELAY_COUNT) return false;
-    /* digital inputs 4..7 are NQ5..NQ8 in logical relay order. */
-    return digital_input_get(BOARD_RELAY_FEEDBACK_FIRST_INPUT + channel);
-}
-
-uint8_t relay_driver_get_mask(void)
-{
-    return (digital_input_get_mask() >> BOARD_RELAY_FEEDBACK_FIRST_INPUT) &
-           ((1U << BOARD_RELAY_COUNT) - 1U);
 }
 
 bool relay_driver_get_commanded(uint8_t channel)

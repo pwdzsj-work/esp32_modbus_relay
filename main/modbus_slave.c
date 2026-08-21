@@ -6,6 +6,7 @@
 #include "rv3028.h"
 #include "rs485_control.h"
 #include "lora_uart.h"
+#include "web_config.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_check.h"
@@ -116,7 +117,8 @@ static bool read_bit(bool coils, uint16_t address)
 {
     if (coils) {
         if (address >= BOARD_RELAY_COUNT) return false;
-        return relay_driver_get(address);
+        /* Coils represent the last successfully applied relay commands. */
+        return relay_driver_get_commanded(address);
     }
     if (address >= BOARD_INPUT_COUNT) return false;
     return digital_input_get(address);
@@ -128,7 +130,7 @@ static bool read_input_reg(uint16_t address, uint16_t *value)
     else if (address < 8) *value = analog_input_get_adc_mv(address - REG_ADC_MV_BASE);
     else if (address < 12) *value = analog_input_get_engineering_x100(address - REG_VALUE_BASE);
     else if (address < 16) *value = analog_input_get_mode(address - REG_MODE_INPUT_BASE);
-    else if (address == 16) *value = relay_driver_get_mask();
+    else if (address == 16) *value = relay_driver_get_commanded_mask();
     else if (address == 17) *value = digital_input_get_mask();
     else return false;
     return true;
@@ -139,8 +141,9 @@ static bool read_holding_reg(uint16_t address, uint16_t *value)
     if (address >= REG_MODE_BASE && address < REG_MODE_BASE + 4)
         *value = analog_input_get_mode(address - REG_MODE_BASE);
     else if (address == REG_RELAY_MASK)
-        *value = relay_driver_get_mask();
+        *value = relay_driver_get_commanded_mask();
     else if (address == REG_INPUT_MASK) *value = digital_input_get_mask();
+    else if (web_config_schedule_read_register(address, value)) return true;
     else if (rv3028_modbus_read_register(address, value)) return true;
     else return rs485_control_read_register(address, value);
     return true;
@@ -244,6 +247,19 @@ static void handle_request(uint8_t *rx, size_t len,
             for (uint16_t i = 0; i < count; ++i)
                 values[i] = get_u16(&rx[7 + 2 * i]);
             if (!rv3028_modbus_write_registers(start, values, count)) {
+                exception(addr, fc, 0x03, transport); return;
+            }
+        } else if (start >= RELAY_SCHEDULE_MODBUS_REG_BASE &&
+                   start + count <=
+                       RELAY_SCHEDULE_MODBUS_REG_BASE +
+                           RELAY_SCHEDULE_MODBUS_REGISTER_COUNT) {
+            uint16_t values[RELAY_SCHEDULE_MODBUS_FIELDS];
+            if (count != RELAY_SCHEDULE_MODBUS_FIELDS) {
+                exception(addr, fc, 0x03, transport); return;
+            }
+            for (uint16_t i = 0; i < count; ++i)
+                values[i] = get_u16(&rx[7 + 2 * i]);
+            if (!web_config_schedule_write_registers(start, values, count)) {
                 exception(addr, fc, 0x03, transport); return;
             }
         } else {

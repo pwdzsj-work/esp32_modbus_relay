@@ -99,7 +99,7 @@ static const char s_index_html[] =
     "<input name='password' type='password' maxlength='64'>"
     "<button type='submit'>保存并连接</button></form></section>"
     "<section class='card'><h2>继电器控制</h2>"
-    "<div class='muted'>卡片绿点只表示控制命令。NQ不是24V电源检测：关闭命令时NQ未动作属于正常；只有开启命令后才应收到NQ驱动反馈。本机硬件无法检测触点是否实际吸合。</div>"
+    "<div class='muted'>卡片绿点表示继电器控制状态；NQ1～NQ4 为独立外部输入。</div>"
     "<div id='relays' class='grid'></div></section>"
     "<section class='card'><h2>继电器每日定时"
     "</h2><div class='muted'>启用后按RV-3028时间自动控制，支持跨午夜。</div>"
@@ -136,17 +136,13 @@ static const char s_index_html[] =
     "schedulesRendered=false;load()}catch(e){toast(e.message)}}"
     "function card(name,on,buttons=''){return `<div class='item'><div><span "
     "class='dot ${on?'on':''}'></span>${name}</div>${buttons}</div>`}"
-    "function feedbackText(cmd,fb){if(cmd&&fb)return '已动作';"
-    "if(cmd&&!fb)return '未收到反馈（请检查24V及驱动）';"
-    "if(!cmd&&fb)return '关闭命令下仍有效（异常）';return '未动作（正常待机）'}"
     "async function load(){if(statusLoading||otaUploading)return;statusLoading="
     "true;try{let r="
     "await request('/api/status',{cache:'no-store'});if(!r.ok)throw Error();let s="
     "await r.json();$('#wifi').textContent=s.wifi.connected?`已连接 "
     "${s.wifi.ssid}，IP：${s.wifi.ip}`:'未连接路由器；热点地址：192.168.4.1';"
     "$('#relays').innerHTML=[0,1,2,3].map(i=>card(`继电器 ${i+1}<br><span "
-    "class='muted'>控制命令：${s.relay_commands&(1<<i)?'开启':'关闭'}<br>NQ驱动反馈："
-    "${feedbackText(s.relay_commands&(1<<i),s.relay_feedback&(1<<i))}</span>`,"
+    "class='muted'>控制状态：${s.relay_commands&(1<<i)?'开启':'关闭'}</span>`,"
     "s.relay_commands&(1<<i),`<br><button onclick='relay(${i},1)'>开启命令</button><button "
     "class='offbtn' onclick='relay(${i},0)'>关闭命令</button>`)).join('');"
     "if(!schedulesRendered){$('#schedules').innerHTML=s.schedules.map((v,i)=>"
@@ -360,6 +356,82 @@ static void apply_relay_schedules(void)
     }
 }
 
+bool web_config_schedule_read_register(uint16_t address, uint16_t *value)
+{
+    if (!value || !s_schedule_lock ||
+        address < RELAY_SCHEDULE_MODBUS_REG_BASE ||
+        address >= RELAY_SCHEDULE_MODBUS_REG_BASE +
+                       RELAY_SCHEDULE_MODBUS_REGISTER_COUNT) {
+        return false;
+    }
+
+    uint16_t offset = address - RELAY_SCHEDULE_MODBUS_REG_BASE;
+    uint8_t channel = (uint8_t)(offset / RELAY_SCHEDULE_MODBUS_FIELDS);
+    uint8_t field = (uint8_t)(offset % RELAY_SCHEDULE_MODBUS_FIELDS);
+    xSemaphoreTake(s_schedule_lock, portMAX_DELAY);
+    relay_schedule_t schedule = s_schedules[channel];
+    xSemaphoreGive(s_schedule_lock);
+
+    switch (field) {
+    case 0: *value = schedule.enabled; break;
+    case 1: *value = schedule.on_hour; break;
+    case 2: *value = schedule.on_minute; break;
+    case 3: *value = schedule.off_hour; break;
+    case 4: *value = schedule.off_minute; break;
+    default: return false;
+    }
+    return true;
+}
+
+bool web_config_schedule_write_registers(uint16_t start,
+                                         const uint16_t *values,
+                                         size_t count)
+{
+    if (!values || !s_schedule_lock ||
+        count != RELAY_SCHEDULE_MODBUS_FIELDS ||
+        start < RELAY_SCHEDULE_MODBUS_REG_BASE ||
+        start >= RELAY_SCHEDULE_MODBUS_REG_BASE +
+                     RELAY_SCHEDULE_MODBUS_REGISTER_COUNT ||
+        (start - RELAY_SCHEDULE_MODBUS_REG_BASE) %
+            RELAY_SCHEDULE_MODBUS_FIELDS != 0) {
+        return false;
+    }
+
+    uint8_t channel = (uint8_t)((start - RELAY_SCHEDULE_MODBUS_REG_BASE) /
+                                RELAY_SCHEDULE_MODBUS_FIELDS);
+    if (channel >= BOARD_RELAY_COUNT || values[0] > 1 ||
+        values[1] > 23 || values[2] > 59 ||
+        values[3] > 23 || values[4] > 59 ||
+        (values[0] && values[1] == values[3] &&
+         values[2] == values[4])) {
+        return false;
+    }
+
+    relay_schedule_t updated[BOARD_RELAY_COUNT];
+    xSemaphoreTake(s_schedule_lock, portMAX_DELAY);
+    memcpy(updated, s_schedules, sizeof(updated));
+    xSemaphoreGive(s_schedule_lock);
+    updated[channel] = (relay_schedule_t) {
+        .enabled = (uint8_t)values[0],
+        .on_hour = (uint8_t)values[1],
+        .on_minute = (uint8_t)values[2],
+        .off_hour = (uint8_t)values[3],
+        .off_minute = (uint8_t)values[4],
+    };
+
+    if (save_schedules(updated) != ESP_OK)
+        return false;
+    xSemaphoreTake(s_schedule_lock, portMAX_DELAY);
+    memcpy(s_schedules, updated, sizeof(s_schedules));
+    xSemaphoreGive(s_schedule_lock);
+    apply_relay_schedules();
+    ESP_LOGI(TAG,
+             "Modbus relay %u schedule: %s, ON %02u:%02u, OFF %02u:%02u",
+             channel + 1, values[0] ? "enabled" : "disabled",
+             values[1], values[2], values[3], values[4]);
+    return true;
+}
+
 static esp_err_t status_handler(httpd_req_t *req)
 {
     uint16_t analog[BOARD_ANALOG_COUNT];
@@ -391,7 +463,7 @@ static esp_err_t status_handler(httpd_req_t *req)
 
     char json[1024];
     snprintf(json, sizeof(json),
-             "{\"relay_commands\":%u,\"relay_feedback\":%u,\"inputs\":%u,"
+             "{\"relay_commands\":%u,\"inputs\":%u,"
              "\"analog\":[%u,%u,%u,%u],\"modes\":[%u,%u,%u,%u],"
              "\"voltage\":[%u,%u,%u,%u],"
              "\"current\":[%u,%u,%u,%u],"
@@ -401,8 +473,7 @@ static esp_err_t status_handler(httpd_req_t *req)
              "\"hour\":%u,\"minute\":%u,\"second\":%u},"
              "\"wifi\":{\"connected\":%s,\"ssid\":\"%s\","
              "\"ip\":\"" IPSTR "\"}}",
-             relay_driver_get_commanded_mask(), relay_driver_get_mask(),
-             digital_input_get_mask(),
+             relay_driver_get_commanded_mask(), digital_input_get_mask(),
              analog[0], analog[1], analog[2], analog[3],
              modes[0], modes[1], modes[2], modes[3],
              voltage[0], voltage[1], voltage[2], voltage[3],

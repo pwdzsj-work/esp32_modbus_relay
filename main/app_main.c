@@ -12,7 +12,11 @@
 #include "web_config.h"
 
 static const char *TAG = "APP";
+<<<<<<< HEAD
 #define APP_BUILD_TAG "rs485-lora-mac-discovery-20260820"
+=======
+#define APP_BUILD_TAG "lora-relay-schedule-sync-20260821"
+>>>>>>> 5008f76 (适配终端和上位机通信协议机制)
 
 void app_main(void)
 {
@@ -34,9 +38,11 @@ void app_main(void)
     ESP_ERROR_CHECK(rs485_control_init());
     ESP_LOGI(TAG, "RS485 command control initialized");
 
+    /* NVS-backed schedules must be ready before either Modbus transport can
+     * accept schedule reads or writes. */
+    ESP_ERROR_CHECK(web_config_start_if_requested());
     ESP_ERROR_CHECK(modbus_slave_init());
     ESP_ERROR_CHECK(lora_receiver_init());
-    ESP_ERROR_CHECK(web_config_start_if_requested());
 
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t ota_state;

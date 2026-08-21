@@ -66,7 +66,7 @@ bool rs485_control_read_register(uint16_t address, uint16_t *value)
         *value = s_result;
         return true;
     case RS485_CTRL_REG_RELAY_MASK:
-        *value = relay_driver_get_mask();
+        *value = relay_driver_get_commanded_mask();
         return true;
     default:
         return false;
