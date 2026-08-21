@@ -12,11 +12,7 @@
 #include "web_config.h"
 
 static const char *TAG = "APP";
-<<<<<<< HEAD
-#define APP_BUILD_TAG "rs485-lora-mac-discovery-20260820"
-=======
-#define APP_BUILD_TAG "lora-relay-schedule-sync-20260821"
->>>>>>> 5008f76 (适配终端和上位机通信协议机制)
+#define APP_BUILD_TAG "device-list-mac-sku-20260821"
 
 void app_main(void)
 {

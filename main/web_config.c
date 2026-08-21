@@ -10,6 +10,7 @@
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
@@ -461,9 +462,20 @@ static esp_err_t status_handler(httpd_req_t *req)
         ssid[sizeof(sta_cfg.sta.ssid)] = '\0';
     }
 
+    uint8_t mac[6] = {0};
+    esp_err_t mac_err = esp_efuse_mac_get_default(mac);
+    if (mac_err != ESP_OK) {
+        ESP_LOGE(TAG, "Unable to read base MAC: %s",
+                 esp_err_to_name(mac_err));
+        return send_error(req, "500 Internal Server Error",
+                          "无法读取设备MAC");
+    }
+
     char json[1024];
     snprintf(json, sizeof(json),
-             "{\"relay_commands\":%u,\"inputs\":%u,"
+             "{\"mac\":\"%02X-%02X-%02X-%02X-%02X-%02X\","
+             "\"sku\":\"%s\","
+             "\"relay_commands\":%u,\"inputs\":%u,"
              "\"analog\":[%u,%u,%u,%u],\"modes\":[%u,%u,%u,%u],"
              "\"voltage\":[%u,%u,%u,%u],"
              "\"current\":[%u,%u,%u,%u],"
@@ -473,6 +485,9 @@ static esp_err_t status_handler(httpd_req_t *req)
              "\"hour\":%u,\"minute\":%u,\"second\":%u},"
              "\"wifi\":{\"connected\":%s,\"ssid\":\"%s\","
              "\"ip\":\"" IPSTR "\"}}",
+             (unsigned)mac[0], (unsigned)mac[1], (unsigned)mac[2],
+             (unsigned)mac[3], (unsigned)mac[4], (unsigned)mac[5],
+             BOARD_PRODUCT_SKU,
              relay_driver_get_commanded_mask(), digital_input_get_mask(),
              analog[0], analog[1], analog[2], analog[3],
              modes[0], modes[1], modes[2], modes[3],
