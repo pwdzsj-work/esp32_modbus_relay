@@ -53,6 +53,7 @@ static bool s_switch_low;
 static bool s_switch_raw_low;
 static bool s_switch_action_done;
 static bool s_web_started;
+static bool s_wifi_started;
 static TickType_t s_switch_low_since;
 static TickType_t s_switch_raw_changed_at;
 static TickType_t s_last_schedule_check;
@@ -62,6 +63,7 @@ static esp_ip4_addr_t s_sta_ip;
 static esp_netif_t *s_ap_netif;
 static esp_netif_t *s_sta_netif;
 static httpd_handle_t s_server;
+static char s_ap_ssid[33];
 
 static void copy_wifi_field(uint8_t *destination, size_t destination_size,
                             const char *source)
@@ -638,7 +640,9 @@ static esp_err_t apply_sta_config(const char *ssid, const char *password)
     cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     cfg.sta.pmf_cfg.capable = true;
     cfg.sta.pmf_cfg.required = false;
-    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_err_t err = esp_wifi_set_mode(s_web_started
+                                          ? WIFI_MODE_APSTA
+                                          : WIFI_MODE_STA);
     if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
     if (err == ESP_OK) {
         s_sta_has_credentials = true;
@@ -824,10 +828,39 @@ static esp_err_t init_nvs(void)
     return err;
 }
 
-static esp_err_t start_web_mode(void)
+static void fill_ap_config(wifi_config_t *config)
 {
-    ESP_LOGI(TAG, "SW3 held low for %d ms: starting web mode",
-             WEB_SWITCH_HOLD_MS);
+    memset(config, 0, sizeof(*config));
+    size_t ssid_len = strlen(s_ap_ssid);
+    memcpy(config->ap.ssid, s_ap_ssid, ssid_len);
+    snprintf((char *)config->ap.password, sizeof(config->ap.password), "%s",
+             BOARD_WEB_AP_PASSWORD);
+    config->ap.ssid_len = (uint8_t)ssid_len;
+    config->ap.channel = 1;
+    config->ap.max_connection = 4;
+    config->ap.authmode = WIFI_AUTH_WPA2_PSK;
+}
+
+static esp_err_t start_web_mode(bool enable_ap)
+{
+    if (s_wifi_started) {
+        esp_err_t err = esp_wifi_set_mode(s_sta_has_credentials
+                                              ? WIFI_MODE_APSTA
+                                              : WIFI_MODE_AP);
+        if (err == ESP_OK) {
+            wifi_config_t ap_cfg;
+            fill_ap_config(&ap_cfg);
+            err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+        }
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "AP='%s', password='%s', open http://192.168.4.1",
+                     s_ap_ssid, BOARD_WEB_AP_PASSWORD);
+        }
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Starting Wi-Fi%s and web server",
+             enable_ap ? " with AP" : " station");
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     err = esp_event_loop_create_default();
@@ -849,22 +882,28 @@ static esp_err_t start_web_mode(void)
     }
     if (err != ESP_OK) return err;
 
-    wifi_config_t ap_cfg = {0};
-    snprintf((char *)ap_cfg.ap.ssid, sizeof(ap_cfg.ap.ssid), "%s",
-             BOARD_WEB_AP_SSID);
-    snprintf((char *)ap_cfg.ap.password, sizeof(ap_cfg.ap.password), "%s",
-             BOARD_WEB_AP_PASSWORD);
-    ap_cfg.ap.ssid_len = strlen(BOARD_WEB_AP_SSID);
-    ap_cfg.ap.channel = 1;
-    ap_cfg.ap.max_connection = 4;
-    ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    uint8_t ap_mac[6];
+    err = esp_read_mac(ap_mac, ESP_MAC_WIFI_SOFTAP);
+    if (err != ESP_OK) return err;
+    int ap_ssid_len = snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s-%02X%02X",
+                               BOARD_WEB_AP_SSID, ap_mac[4], ap_mac[5]);
+    if (ap_ssid_len < 0 || ap_ssid_len >= (int)sizeof(s_ap_ssid)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     char sta_ssid[33] = "", sta_password[65] = "";
     s_sta_has_credentials = load_wifi_credentials(
         sta_ssid, sizeof(sta_ssid), sta_password, sizeof(sta_password));
-    err = esp_wifi_set_mode(s_sta_has_credentials
-                                ? WIFI_MODE_APSTA : WIFI_MODE_AP);
-    if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    wifi_mode_t mode = enable_ap
+                           ? (s_sta_has_credentials
+                                  ? WIFI_MODE_APSTA : WIFI_MODE_AP)
+                           : WIFI_MODE_STA;
+    err = esp_wifi_set_mode(mode);
+    if (err == ESP_OK && enable_ap) {
+        wifi_config_t ap_cfg;
+        fill_ap_config(&ap_cfg);
+        err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    }
     if (err == ESP_OK && s_sta_has_credentials) {
         wifi_config_t sta_cfg = {0};
         copy_wifi_field(sta_cfg.sta.ssid, sizeof(sta_cfg.sta.ssid),
@@ -879,16 +918,28 @@ static esp_err_t start_web_mode(void)
     if (err != ESP_OK) return err;
     err = start_http_server();
     if (err != ESP_OK) return err;
+    s_wifi_started = true;
 
-    ESP_LOGI(TAG, "AP='%s', password='%s', open http://192.168.4.1",
-             BOARD_WEB_AP_SSID, BOARD_WEB_AP_PASSWORD);
+    if (enable_ap) {
+        ESP_LOGI(TAG, "AP='%s', password='%s', open http://192.168.4.1",
+                 s_ap_ssid, BOARD_WEB_AP_PASSWORD);
+    } else {
+        ESP_LOGI(TAG, "AP disabled at startup; station connection started");
+    }
     return ESP_OK;
 }
 
 static esp_err_t stop_web_mode(void)
 {
-    ESP_LOGI(TAG, "SW3 held low for %d ms: stopping web mode",
-             WEB_SWITCH_HOLD_MS);
+    if (s_sta_has_credentials) {
+        esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "AP stopped; station and web server remain active");
+        }
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Stopping AP and web server");
     esp_err_t result = ESP_OK;
 
     if (s_server) {
@@ -935,6 +986,7 @@ static esp_err_t stop_web_mode(void)
     s_sta_has_credentials = false;
     s_sta_connected = false;
     s_sta_ip.addr = 0;
+    s_wifi_started = false;
     ESP_LOGI(TAG, "Wi-Fi hotspot and web server stopped");
     return result;
 }
@@ -963,6 +1015,15 @@ esp_err_t web_config_start_if_requested(void)
     s_switch_raw_changed_at = xTaskGetTickCount();
     s_switch_action_done = false;
     s_web_started = false;
+
+    char sta_ssid[33] = "", sta_password[65] = "";
+    if (load_wifi_credentials(sta_ssid, sizeof(sta_ssid),
+                              sta_password, sizeof(sta_password))) {
+        ESP_LOGI(TAG, "Saved Wi-Fi credentials found; connecting to '%s'",
+                 sta_ssid);
+        err = start_web_mode(false);
+        if (err != ESP_OK) return err;
+    }
     ESP_LOGI(TAG,
              "SW3 runtime detection ready: GPIO%d, debounce=%d ms, "
              "hold low for %d ms",
@@ -1013,7 +1074,7 @@ void web_config_poll(void)
         return;
     }
 
-    esp_err_t err = s_web_started ? stop_web_mode() : start_web_mode();
+    esp_err_t err = s_web_started ? stop_web_mode() : start_web_mode(true);
     if (err == ESP_OK) {
         s_web_started = !s_web_started;
     } else {

@@ -9,12 +9,13 @@
 #define RELAY_SCHEDULE_MODBUS_FIELDS         5
 #define RELAY_SCHEDULE_MODBUS_REGISTER_COUNT 20
 
-/* Configures SW3 for runtime detection. */
+/* Configures SW3 and starts STA only when credentials are saved. */
 esp_err_t web_config_start_if_requested(void);
 
 /*
  * Call periodically. Each three-second SW3 press toggles the Wi-Fi access
- * point and web server. SW3 must be released between toggle operations.
+ * point. When credentials exist, STA and the web server remain active while
+ * the AP is off. SW3 must be released between toggle operations.
  */
 void web_config_poll(void);
 
