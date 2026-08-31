@@ -68,5 +68,5 @@
  */
 #define BOARD_MODBUS_SERVER_ID         BOARD_MODBUS_SLAVE_ADDR
 /* Stable product SKU reported by both discovery protocols. */
-#define BOARD_PRODUCT_SKU              "ESP32-RELAY-4"
+#define BOARD_PRODUCT_SKU              "LR-4DO-4DI-4AI-L433-V1"
 #define BOARD_DEVICE_MODEL             BOARD_PRODUCT_SKU

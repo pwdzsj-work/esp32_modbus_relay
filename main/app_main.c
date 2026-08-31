@@ -12,7 +12,7 @@
 #include "web_config.h"
 
 static const char *TAG = "APP";
-#define APP_BUILD_TAG "device-list-mac-sku-20260821"
+#define APP_BUILD_TAG "device-list-mac-sku-20260831-WIFI-RECONFIG"
 
 void app_main(void)
 {

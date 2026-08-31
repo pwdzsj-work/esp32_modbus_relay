@@ -37,7 +37,7 @@ delayMs = slot * slotDurationMs
 
 回复命令为 `81`，负载依次包含原 nonce、真实 eFuse MAC、当前 Modbus
 地址、功能位图、继电器/数字输入/模拟输入通道数，以及 UTF-8 SKU。当前
-SKU 为 `ESP32-RELAY-4`，实际通道数为 `4/8/4`。相同 nonce 只回复一次；
+SKU 为 `LR-4DO-4DI-4AI-L433-V1`，实际通道数为 `4/8/4`。相同 nonce 只回复一次；
 新 nonce 会取消尚未发送的旧回复。实现位于 `main/lora_discovery.c`。
 
 功能码 `0x11` 的原 Modbus 地址发现仍保留用于兼容和调试，但正式上位机

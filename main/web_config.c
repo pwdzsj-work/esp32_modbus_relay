@@ -48,6 +48,11 @@ typedef struct {
 static const char *TAG = "WEB";
 static bool s_sta_has_credentials;
 static bool s_sta_connected;
+static volatile bool s_sta_reconfiguring;
+static TaskHandle_t s_sta_connect_task;
+static SemaphoreHandle_t s_sta_config_lock;
+static wifi_config_t s_pending_sta_config;
+static uint32_t s_sta_config_generation;
 static bool s_switch_initialized;
 static bool s_switch_low;
 static bool s_switch_raw_low;
@@ -632,6 +637,84 @@ static bool load_wifi_credentials(char *ssid, size_t ssid_size,
     return err == ESP_OK && ssid[0];
 }
 
+static void sta_connect_task(void *argument)
+{
+    (void)argument;
+    /* Leave enough time for the HTTP response to reach the browser before a
+     * STA-only connection is deliberately disconnected. */
+    vTaskDelay(pdMS_TO_TICKS(250));
+
+    while (true) {
+        wifi_config_t cfg;
+        uint32_t generation;
+        xSemaphoreTake(s_sta_config_lock, portMAX_DELAY);
+        cfg = s_pending_sta_config;
+        generation = s_sta_config_generation;
+        xSemaphoreGive(s_sta_config_lock);
+
+        esp_err_t err = ESP_FAIL;
+        for (int attempt = 1; attempt <= 10; ++attempt) {
+            /* esp_wifi_disconnect() completes asynchronously.  Setting STA
+             * configuration while the driver is still authenticating returns
+             * ESP_ERR_WIFI_STATE, so wait for STA_DISCONNECTED first. */
+            ulTaskNotifyTake(pdTRUE, 0);
+            esp_err_t disconnect_err = esp_wifi_disconnect();
+            if (disconnect_err == ESP_OK) {
+                if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) == 0) {
+                    ESP_LOGW(TAG,
+                             "Timed out waiting for Wi-Fi disconnect "
+                             "(attempt %d)", attempt);
+                }
+            } else if (disconnect_err != ESP_ERR_WIFI_NOT_CONNECT) {
+                ESP_LOGW(TAG, "Wi-Fi disconnect attempt %d failed: %s",
+                         attempt, esp_err_to_name(disconnect_err));
+            }
+
+            wifi_mode_t mode = s_web_started ? WIFI_MODE_APSTA
+                                             : WIFI_MODE_STA;
+            err = esp_wifi_set_mode(mode);
+            if (err == ESP_OK) {
+                err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
+            }
+            if (err == ESP_OK) break;
+
+            ESP_LOGW(TAG, "Wi-Fi configuration attempt %d failed: %s",
+                     attempt, esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+
+        if (err == ESP_OK) {
+            for (int attempt = 1; attempt <= 10; ++attempt) {
+                err = esp_wifi_connect();
+                if (err == ESP_OK) {
+                    ESP_LOGI(TAG,
+                             "Wi-Fi connection started (attempt %d)",
+                             attempt);
+                    break;
+                }
+                ESP_LOGW(TAG, "Wi-Fi connection attempt %d failed: %s",
+                         attempt, esp_err_to_name(err));
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        } else {
+            ESP_LOGE(TAG, "Unable to apply Wi-Fi configuration: %s",
+                     esp_err_to_name(err));
+        }
+
+        /* A second Web request may have supplied newer credentials while this
+         * task was working.  Apply only the newest pending configuration. */
+        xSemaphoreTake(s_sta_config_lock, portMAX_DELAY);
+        if (generation != s_sta_config_generation) {
+            xSemaphoreGive(s_sta_config_lock);
+            continue;
+        }
+        s_sta_reconfiguring = false;
+        s_sta_connect_task = NULL;
+        xSemaphoreGive(s_sta_config_lock);
+        vTaskDelete(NULL);
+    }
+}
+
 static esp_err_t apply_sta_config(const char *ssid, const char *password)
 {
     wifi_config_t cfg = {0};
@@ -640,17 +723,24 @@ static esp_err_t apply_sta_config(const char *ssid, const char *password)
     cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     cfg.sta.pmf_cfg.capable = true;
     cfg.sta.pmf_cfg.required = false;
-    esp_err_t err = esp_wifi_set_mode(s_web_started
-                                          ? WIFI_MODE_APSTA
-                                          : WIFI_MODE_STA);
-    if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
-    if (err == ESP_OK) {
-        s_sta_has_credentials = true;
-        s_sta_connected = false;
-        s_sta_ip.addr = 0;
-        esp_wifi_disconnect();
-        err = esp_wifi_connect();
+    /* The worker owns disconnect -> set_config -> connect ordering.  Updating
+     * the pending value also makes repeated submissions safe: an existing
+     * worker simply loops once more and applies the latest credentials. */
+    xSemaphoreTake(s_sta_config_lock, portMAX_DELAY);
+    s_pending_sta_config = cfg;
+    ++s_sta_config_generation;
+    s_sta_has_credentials = true;
+    s_sta_connected = false;
+    s_sta_ip.addr = 0;
+    s_sta_reconfiguring = true;
+    esp_err_t err = ESP_OK;
+    if (!s_sta_connect_task &&
+        xTaskCreate(sta_connect_task, "wifi_sta_connect", 4096, NULL, 5,
+                    &s_sta_connect_task) != pdPASS) {
+        s_sta_reconfiguring = false;
+        err = ESP_ERR_NO_MEM;
     }
+    xSemaphoreGive(s_sta_config_lock);
     return err;
 }
 
@@ -775,13 +865,25 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
 {
     (void)argument;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START &&
-        s_sta_has_credentials) {
+        s_sta_has_credentials && !s_sta_reconfiguring) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT &&
                event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event = event_data;
         s_sta_connected = false;
         s_sta_ip.addr = 0;
-        if (s_sta_has_credentials) esp_wifi_connect();
+        ESP_LOGW(TAG, "Wi-Fi disconnected: reason=%u%s",
+                 event ? event->reason : 0,
+                 s_sta_reconfiguring ? " (reconfiguring)" : "");
+        if (s_sta_reconfiguring && s_sta_connect_task) {
+            xTaskNotifyGive(s_sta_connect_task);
+        } else if (s_sta_has_credentials && !s_sta_reconfiguring) {
+            esp_err_t err = esp_wifi_connect();
+            if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+                ESP_LOGW(TAG, "Wi-Fi reconnect failed: %s",
+                         esp_err_to_name(err));
+            }
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *event = event_data;
         s_sta_ip = event->ip_info.ip;
@@ -1005,7 +1107,8 @@ esp_err_t web_config_start_if_requested(void)
     err = init_nvs();
     if (err != ESP_OK) return err;
     s_schedule_lock = xSemaphoreCreateMutex();
-    if (!s_schedule_lock) return ESP_ERR_NO_MEM;
+    s_sta_config_lock = xSemaphoreCreateMutex();
+    if (!s_schedule_lock || !s_sta_config_lock) return ESP_ERR_NO_MEM;
     load_schedules();
 
     s_switch_initialized = true;
